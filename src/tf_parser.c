@@ -198,7 +198,11 @@ static bool tf_parser__reduce(TFParser *self, TSSymbol symbol, uint32_t child_co
       self->root.children = children;
       self->root.capacity = reduction.node_count;
     }
-    memcpy(self->root.children, reduction.children, reduction.node_count * sizeof(TFNode));
+    // An empty root production has no children and nothing allocated to hold
+    // them; glibc declares memcpy non-null, so even a zero-length copy is UB.
+    if (reduction.node_count > 0) {
+      memcpy(self->root.children, reduction.children, reduction.node_count * sizeof(TFNode));
+    }
     self->root.pending = true;
     self->root.base = base;
     self->root.symbol = symbol;
@@ -977,8 +981,11 @@ bool tf_parse(const TFLanguage *lang, const void *source, uint32_t size, const T
             tf_parser__fail(&self, token.start_byte, token.start_point, "out of memory");
             goto done;
           }
-          memcpy(children, self.nodes, below * sizeof(TFNode));
-          memcpy(children + below, self.root.children, self.root.node_count * sizeof(TFNode));
+          if (below > 0) memcpy(children, self.nodes, below * sizeof(TFNode));
+          // A root with an empty production never allocated a child array.
+          if (self.root.node_count > 0) {
+            memcpy(children + below, self.root.children, self.root.node_count * sizeof(TFNode));
+          }
           memcpy(children + below + self.root.node_count, &self.nodes[self.root.base + 1],
                  above * sizeof(TFNode));
           children[total - 1] = (TFNode){

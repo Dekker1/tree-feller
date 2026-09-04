@@ -78,11 +78,14 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
 
       - name: Install clang tooling
-        run: sudo apt-get update && sudo apt-get install -y clang-format clang-tidy
+        run: |
+          pipx install clang-format==21.1.6
+          pipx install clang-tidy==21.1.6
 
       - name: clang-format
         run: |
-          git ls-files '*.c' '*.h' | xargs clang-format --dry-run -Werror
+          git ls-files 'src/*.c' 'src/*.h' 'tests/test_*.c' 'tools/*.c' 'bench/*.c' \
+            | xargs clang-format --dry-run -Werror
 
       # clang-tidy needs a compilation database, which needs the grammars.
       - name: Cache fetched grammars

@@ -23,7 +23,10 @@
 // parsed which simply do not happen.
 //
 // The tag bit keeps the value non-NULL, which the driver treats as "no value".
-_Static_assert(sizeof(void *) >= 8, "the packed cell needs a 64-bit pointer");
+// Spelled as a negative-width array rather than `_Static_assert`, which MSVC
+// only accepts under /std:c11 -- and the Rust crate's `cc` build does not pass a
+// standard flag.
+typedef char TFPackedCellNeeds64BitPointer[sizeof(void *) >= 8 ? 1 : -1];
 // NOLINTBEGIN(performance-no-int-to-ptr): the pointer is the storage, not a
 // pointer to it. That is the whole point -- see above.
 #define TF_PACK(children, production) \
