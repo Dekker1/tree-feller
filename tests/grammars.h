@@ -13,6 +13,7 @@
 const TSLanguage *tree_sitter_c(void);
 const TSLanguage *tree_sitter_go(void);
 const TSLanguage *tree_sitter_regex(void);
+const TSLanguage *tree_sitter_solidity(void);
 const TSLanguage *tree_sitter_datazinc(void);
 const TSLanguage *tree_sitter_minizinc(void);
 const TSLanguage *tree_sitter_eprime(void);
@@ -29,6 +30,7 @@ static const TFGrammar TF_GRAMMARS[] = {
     {"c", tree_sitter_c, ".c"},
     {"go", tree_sitter_go, ".go"},
     {"regex", tree_sitter_regex, ".regex"},
+    {"solidity", tree_sitter_solidity, ".sol"},
     {"datazinc", tree_sitter_datazinc, ".dzn"},
     {"minizinc", tree_sitter_minizinc, ".mzn"},
     {"eprime", tree_sitter_eprime, ".eprime"},

@@ -387,6 +387,29 @@ static bool tf_branch__clone(TFBranch *out, const TFBranch *self) {
 
 typedef enum { TFStepShifted, TFStepDead, TFStepAccepted, TFStepSplit, TFStepFailed } TFStep;
 
+// parser.c:1722-1747. A word the keyword lexer reclassified can still turn out
+// to be an identifier after all.
+//
+// The substitution was judged against the state the token was *lexed* in, using
+// that state's larger token set. Reductions since then may have arrived at a
+// state where the keyword is not valid and is not reserved, but the word token
+// is -- a field or a label named after a keyword, in a grammar that allows it.
+// tree-sitter demotes the token there rather than failing, so this does too.
+//
+// Reached only where the parse was otherwise about to stop, so it costs nothing
+// on the way through.
+static bool tf_parser__demote_keyword(const TFLanguage *lang, TSStateId state, TFToken *token,
+                                      bool was_keyword) {
+  const TSLanguage *ts = lang->ts;
+  if (!was_keyword || token->symbol == ts->keyword_capture_token) return false;
+  if (tf_is_reserved_word(lang, state, token->symbol)) return false;
+  uint32_t count;
+  tf_actions(lang, state, ts->keyword_capture_token, &count);
+  if (count == 0) return false;
+  token->symbol = ts->keyword_capture_token;
+  return true;
+}
+
 // Run one branch through its current token, up to and including the shift that
 // consumes it. Returns TFStepSplit with the branch untouched when the token
 // hits a conflict and the caller must clone.
@@ -396,6 +419,9 @@ static TFStep tf_branch__step(TFBranch *self, const TFLanguage *lang, uint32_t *
     uint32_t count;
     const TSParseAction *actions = tf_actions(lang, state, self->token.symbol, &count);
     if (count == 0) {
+      if (tf_parser__demote_keyword(lang, state, &self->token, self->lexer.token_is_keyword)) {
+        continue;
+      }
       tf_branch__die(self, false);
       return TFStepDead;
     }
@@ -883,6 +909,9 @@ bool tf_parse(const TFLanguage *lang, const void *source, uint32_t size, const T
       uint32_t count;
       const TSParseAction *actions = tf_actions(lang, state, token.symbol, &count);
       if (count == 0) {
+        if (tf_parser__demote_keyword(lang, state, &token, self.lexer.token_is_keyword)) {
+          continue;
+        }
         tf_parser__fail_unexpected(&self, state, &token);
         goto done;
       }

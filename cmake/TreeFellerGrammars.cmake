@@ -70,6 +70,9 @@ endfunction()
 #             table; the one grammar here that uses ABI 15 reserved words.
 #   regex     137 states and no fields at all, which is the branch
 #             `tf_field_map` short-circuits.
+#   solidity  contextual keywords -- words that are keywords in one position and
+#             identifiers in another. That is the case the keyword re-lex and
+#             tree-sitter's keyword/word fallback exist for.
 #   minizinc  1025 states, 518 dense: the largest, and the one with the most
 #             conflicts (12).
 #   datazinc  163 states, 2 dense, and exactly one declared conflict -- the
@@ -84,6 +87,8 @@ function(tf_add_grammars)
     a9b2eb57a55fed6b00812912e730b7a275cf4fe98bfd6a5d76263d4438371728 c_parser)
   tf_fetch_crate_grammar(tree-sitter-go 0.25.0
     c8560a4d2f835cc0d4d2c2e03cbd0dde2f6114b43bc491164238d333e28b16ea go_parser)
+  tf_fetch_crate_grammar(tree-sitter-solidity 1.2.13
+    4eacf8875b70879f0cb670c60b233ad0b68752d9e1474e6c3ef168eea8a90b25 solidity_parser)
   tf_fetch_crate_grammar(tree-sitter-regex 0.25.0
     bd8a59be9f0ac131fd8f062eaaba14882b2fa5a6a7882a20134cb1d60df2e625 regex_parser)
   tf_fetch_raw_grammar(datazinc "${SHACKLE}/tree-sitter-datazinc/src/parser.c"
@@ -94,7 +99,7 @@ function(tf_add_grammars)
     eabd6e18fb9feb50b258bc5589012d795713fe4ef860a53297b39bbd991298d4 eprime_parser)
 
   add_library(tf_grammars STATIC
-    "${c_parser}" "${go_parser}" "${regex_parser}"
+    "${c_parser}" "${go_parser}" "${regex_parser}" "${solidity_parser}"
     "${datazinc_parser}" "${minizinc_parser}" "${eprime_parser}")
   # The generated parsers include "tree_sitter/parser.h" and are not warning
   # clean; neither is ours to fix.

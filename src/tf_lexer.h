@@ -26,6 +26,13 @@ typedef struct {
   TFPoint token_start_point;
   uint32_t token_end_byte;  // TF_NO_END until mark_end
   TFPoint token_end_point;
+
+  // Whether the last token `tf_lexer_next` produced was reclassified by the
+  // keyword lexer; the parser may have to undo that later, see
+  // `tf_parser__demote_keyword`. Last on purpose: everything above is touched
+  // per input byte, and putting a field in the middle of that moved the hot
+  // ones across a cache line for a measured 10% loss.
+  bool token_is_keyword;
 } TFLexer;
 
 // ponytail: the source is one contiguous buffer, indexed directly. A pull source

@@ -132,6 +132,7 @@ static void tf_lexer__finish(TFLexer *self) {
 bool tf_lexer_next(TFLexer *self, TSStateId state, TFToken *out) {
   const TSLanguage *ts = self->lang->ts;
 
+  self->token_is_keyword = false;
   tf_lexer__start(self);
   bool found = ts->lex_fn(&self->data, tf_lex_mode(self->lang, state).lex_state);
   tf_lexer__finish(self);
@@ -157,6 +158,9 @@ bool tf_lexer_next(TFLexer *self, TSStateId state, TFToken *out) {
         (tf_lookup(self->lang, state, self->data.result_symbol) != 0 ||
          tf_is_reserved_word(self->lang, state, self->data.result_symbol))) {
       out->symbol = self->data.result_symbol;
+      // Recorded because the substitution was judged against *this* state, and
+      // the parser may end up dispatching the token in a later one.
+      self->token_is_keyword = true;
     }
   }
 

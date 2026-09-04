@@ -227,10 +227,15 @@ no reason.
 ### Genuine conflicts
 
 What survives that filtering is real ambiguity. tree-feller runs a bounded speculative
-split at exactly those states and commits as soon as the branches disagree. Dynamic
-precedence is **not** used to pick a winner: when the competing actions carry equal
-precedence that would be a coin flip, and a silently wrong parse is worse than a hard
-failure.
+split at exactly those states, and lets the branches run until one of them dies or they
+converge.
+
+Nothing is decided at the conflict itself. Resolving greedily there — taking the higher
+dynamic precedence and dropping the other action — is a coin flip whenever the two carry
+equal precedence, which for a declared conflict they usually do. So the choice is made
+when two branches converge, by the same rule tree-sitter uses in
+`ts_parser__select_tree`: higher dynamic precedence, then a structural comparison of
+what each branch built, then the one that got there first.
 
 Splits are bounded and must reconverge, because naive GLR is exponential here — in one
 grammar, nested live splits give 2, then 4, then 8 heads. Nothing in `src/` knows about
@@ -285,6 +290,12 @@ Real limits, not aspirations:
   against Bison's 16.8×.
 - **`tf_language_load` is not thread-safe**; a loaded `TFLanguage` is read-only and safe
   to share.
+- **One known wrong-tree bug.** On a Solidity member expression such as `a.b`, the
+  visible layer reports an extra `expression` node wrapping the object and puts the
+  `object` field on that rather than on the identifier. The production id matches
+  tree-sitter's on both sides, so the parse is right and the visibility filter is not.
+  No other grammar tested reaches it. `corpus_solidity` is pinned to that one failure so
+  it stays visible; the raw reduction stream is unaffected.
 
 ## Testing
 
@@ -323,6 +334,7 @@ six at configure time, each pinned by version and checked by SHA-256:
 | `c` | 2015 | 455 | the direct `parse_table` path, aliases, 39 fields |
 | `go` | 1442 | 29 | almost entirely the packed table; ABI 15 reserved words |
 | `regex` | 137 | 13 | `FIELD_COUNT 0`, the branch `tf_field_map` short-circuits |
+| `solidity` | 977 | 368 | contextual keywords — words that are a keyword in one position and an identifier in another |
 | `minizinc` | 1025 | 518 | the largest, and the most conflicts |
 | `eprime` | 284 | 2 | another grammar from the same generator, as a control |
 | `datazinc` | 163 | 2 | small, and the declared conflict described above |

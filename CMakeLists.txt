@@ -188,10 +188,22 @@ if(TF_BUILD_TESTS)
     target_link_libraries(tf_diff PRIVATE tf_testing ts_internal)
 
     # A corpus per grammar, in this repository, compared node for node against a
-    # walk of the tree libtree-sitter builds. Pinned to zero failures.
-    foreach(grammar c go regex datazinc minizinc eprime)
+    # walk of the tree libtree-sitter builds. Pinned to an exact count rather than
+    # "no failures", so a regression shows up and a fix does too.
+    #
+    # KNOWN BUG, solidity: on a member expression such as `a.b`, tree-feller
+    # reports an extra visible `expression` node wrapping the object, and puts
+    # the `object` field on that instead of on the identifier. Same production id
+    # on both sides, so it is the visibility layer and not the parse. No other
+    # grammar here is shaped in a way that reaches it. Fix this and set it to 0.
+    set(corpus_failures_solidity 1)
+    foreach(grammar c go regex solidity datazinc minizinc eprime)
+      if(NOT DEFINED corpus_failures_${grammar})
+        set(corpus_failures_${grammar} 0)
+      endif()
       add_test(NAME corpus_${grammar}
-               COMMAND tf_diff --grammar ${grammar} --expect-failures 0
+               COMMAND tf_diff --grammar ${grammar}
+                       --expect-failures ${corpus_failures_${grammar}}
                        "${PROJECT_SOURCE_DIR}/tests/corpus/${grammar}")
     endforeach()
 
