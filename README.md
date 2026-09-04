@@ -290,12 +290,6 @@ Real limits, not aspirations:
   against Bison's 16.8×.
 - **`tf_language_load` is not thread-safe**; a loaded `TFLanguage` is read-only and safe
   to share.
-- **One known wrong-tree bug.** On a Solidity member expression such as `a.b`, the
-  visible layer reports an extra `expression` node wrapping the object and puts the
-  `object` field on that rather than on the identifier. The production id matches
-  tree-sitter's on both sides, so the parse is right and the visibility filter is not.
-  No other grammar tested reaches it. `corpus_solidity` is pinned to that one failure so
-  it stays visible; the raw reduction stream is unaffected.
 
 ## Testing
 
@@ -334,7 +328,7 @@ six at configure time, each pinned by version and checked by SHA-256:
 | `c` | 2015 | 455 | the direct `parse_table` path, aliases, 39 fields |
 | `go` | 1442 | 29 | almost entirely the packed table; ABI 15 reserved words |
 | `regex` | 137 | 13 | `FIELD_COUNT 0`, the branch `tf_field_map` short-circuits |
-| `solidity` | 977 | 368 | contextual keywords — words that are a keyword in one position and an identifier in another |
+| `solidity` | 977 | 368 | contextual keywords, and conflicts decided by comparing derivations rather than by precedence |
 | `minizinc` | 1025 | 518 | the largest, and the most conflicts |
 | `eprime` | 284 | 2 | another grammar from the same generator, as a control |
 | `datazinc` | 163 | 2 | small, and the declared conflict described above |

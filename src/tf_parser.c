@@ -610,7 +610,15 @@ static void tf_forest__build(TFForest *self, const TFBranch *branch, uint32_t ba
 
 // subtree.c:/ts_subtree_compare/, over the cells each branch has on its stack.
 // Returns -1 if `a` sorts first, 1 if `b` does, 0 if they are indistinguishable.
-static int tf_forest__compare(const TFForest *a, const TFForest *b) {
+// The symbol of a cell, whether it was built after the fork or inherited from
+// before it. `nodes` is the parser's own stack, which the branches have not
+// touched, so an inherited index still names a real node.
+static TSSymbol tf_forest__symbol(const TFForest *f, uint32_t cell, const TFNode *nodes) {
+  return cell >= TF_SHAPE_INHERITED ? nodes[cell & ~TF_SHAPE_INHERITED].symbol
+                                    : f->shapes[cell].symbol;
+}
+
+static int tf_forest__compare(const TFForest *a, const TFForest *b, const TFNode *nodes) {
   if (a->failed || b->failed) return 0;
   uint32_t count = a->cell_count < b->cell_count ? a->cell_count : b->cell_count;
   uint32_t *stack = NULL, length = 0, capacity = 0;
@@ -624,15 +632,28 @@ static int tf_forest__compare(const TFForest *a, const TFForest *b) {
 
     while (length > 0) {
       uint32_t right = stack[--length], left = stack[--length];
-      // At least one side predates the fork, so both sides hold the same object
-      // and there is nothing to tell apart.
-      if (left >= TF_SHAPE_INHERITED || right >= TF_SHAPE_INHERITED) continue;
+      bool left_old = left >= TF_SHAPE_INHERITED, right_old = right >= TF_SHAPE_INHERITED;
 
-      const TFShape *x = &a->shapes[left], *y = &b->shapes[right];
-      if (x->symbol != y->symbol) {
-        result = x->symbol < y->symbol ? -1 : 1;
+      // The same cell from before the fork on both sides: literally the same
+      // node, nothing to tell apart.
+      if (left_old && right_old && left == right) continue;
+
+      // Otherwise they still have to be compared. One branch having built a node
+      // *around* a cell the other left alone is exactly the difference that
+      // decides which derivation wins, and skipping it here reported the two as
+      // indistinguishable -- which handed the choice to whichever branch
+      // happened to come first.
+      TSSymbol ls = tf_forest__symbol(a, left, nodes);
+      TSSymbol rs = tf_forest__symbol(b, right, nodes);
+      if (ls != rs) {
+        result = ls < rs ? -1 : 1;
         break;
       }
+      // Same symbol, but at least one side is opaque: there is no recorded shape
+      // to recurse into, and both sides agree so far.
+      if (left_old || right_old) continue;
+
+      const TFShape *x = &a->shapes[left], *y = &b->shapes[right];
       if (x->child_count != y->child_count) {
         result = x->child_count < y->child_count ? -1 : 1;
         break;
@@ -657,12 +678,12 @@ static int tf_forest__compare(const TFForest *a, const TFForest *b) {
 // precedence, then the structural comparison, then the one that came first
 // (parser.c:/ts_parser__select_tree/, whose final case is "select_existing").
 static bool tf_branch__prefer_second(const TFBranch *first, const TFBranch *second,
-                                     uint32_t base_depth) {
+                                     uint32_t base_depth, const TFNode *nodes) {
   if (second->precedence != first->precedence) return second->precedence > first->precedence;
   TFForest a = {0}, b = {0};
   tf_forest__build(&a, first, base_depth);
   tf_forest__build(&b, second, base_depth);
-  bool prefer = tf_forest__compare(&a, &b) > 0;
+  bool prefer = tf_forest__compare(&a, &b, nodes) > 0;
   tf_forest__free(&a);
   tf_forest__free(&b);
   return prefer;
@@ -811,7 +832,7 @@ static bool tf_parser__split(TFParser *self, TFToken token, TFToken *next) {
       for (uint32_t j = i + 1; j < count; j++) {
         if (!branches[j].alive || branches[j].accepted) continue;
         if (!tf_branch__same(&branches[i], &branches[j])) continue;
-        if (tf_branch__prefer_second(&branches[i], &branches[j], base_depth)) {
+        if (tf_branch__prefer_second(&branches[i], &branches[j], base_depth, self->nodes)) {
           TFBranch swap = branches[i];
           branches[i] = branches[j];
           branches[j] = swap;
