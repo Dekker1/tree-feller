@@ -1,0 +1,7 @@
+language ESSENCE' 1.0
+given n : int(1..100)
+letting N be domain int(1..n)
+find x : matrix indexed by [N] of int(1..10)
+such that
+    forAll i : N . x[i] >= 0,
+    sum i : N . x[i] <= 50

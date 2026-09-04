@@ -1,0 +1,4 @@
+@PACKAGE_INIT@
+
+include("${CMAKE_CURRENT_LIST_DIR}/tree_fellerTargets.cmake")
+check_required_components(tree_feller)

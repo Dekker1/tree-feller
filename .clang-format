@@ -1,0 +1,12 @@
+---
+BasedOnStyle: Google
+
+ColumnLimit: 100
+DerivePointerAlignment: false
+PointerAlignment: Right
+
+# Sort within a block, never across one. Include order is load-bearing here:
+# `tree_sitter/api.h` has to precede `tree_feller.h`, which pulls in the
+# generated parser.h, and regrouping would silently swap them.
+IncludeBlocks: Preserve
+SortIncludes: CaseSensitive

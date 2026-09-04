@@ -1,0 +1,7 @@
+% a line comment
+/* a block
+   comment */
+x = 1;  % trailing
+/** a doc comment */
+y = 2;
+z = 3  /* between */  ;

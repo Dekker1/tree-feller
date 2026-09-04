@@ -1,0 +1,3 @@
+# Stable options only: CI runs `cargo fmt --check` on stable, and a nightly-only
+# key there is a warning on every invocation rather than a setting.
+max_width = 100

@@ -1,0 +1,41 @@
+---
+Checks: '-*,
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-assignment-in-if-condition,
+  clang-analyzer-*,
+  -clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling,
+  misc-*,
+  -misc-no-recursion,
+  -misc-include-cleaner,
+  modernize-deprecated-headers,
+  modernize-redundant-void-arg,
+  performance-*,
+  readability-*,
+  -readability-magic-numbers,
+  -readability-function-cognitive-complexity,
+  -readability-identifier-length,
+  -readability-avoid-nested-conditional-operator,
+  -readability-enum-initial-value,
+  -readability-math-missing-parentheses,
+  -readability-else-after-return,
+  -readability-isolate-declaration,
+  -readability-braces-around-statements,
+'
+WarningsAsErrors: '*'
+# Only this library's own headers.
+HeaderFilterRegex: '(src|include)/tf_.*\.h$|include/tree_feller\.h$'
+FormatStyle: file
+CheckOptions:
+  - key: readability-identifier-naming.StructCase
+    value: CamelCase
+  - key: readability-identifier-naming.TypedefCase
+    value: CamelCase
+  - key: readability-identifier-naming.FunctionCase
+    value: lower_case
+  - key: readability-identifier-naming.VariableCase
+    value: lower_case
+  - key: readability-identifier-naming.MacroDefinitionCase
+    value: UPPER_CASE
+  - key: readability-identifier-naming.MacroDefinitionIgnoredRegexp
+    value: '^(TF_|tf_).*'

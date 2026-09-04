@@ -1,0 +1,13 @@
+% The 2d and 3d forms, including the index headers that make the grammar's one
+% conflict reachable.
+plain = [| 1, 2 | 3, 4 |];
+single_row = [| 1, 2 |];
+empty = [| |];
+col_header = [| a: b: | 1, 2 |];
+row_index = [| 1: 2, 3 | 4: 5, 6 |];
+both = [| a: b: | 1: 2, 3 |];
+nested_header = [| [| 1: 2: |]: 3: | 4, 5 |];
+trailing_bar = [| 1, 2 | 3, 4 | |];
+three_d = [| | 1, 2 | 3, 4 |, | 5, 6 | 7, 8 | |];
+three_d_one = [| | 1, 2 | |];
+three_d_empty = [| | | |];

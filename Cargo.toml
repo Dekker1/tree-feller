@@ -1,0 +1,47 @@
+[package]
+name = "tree-feller"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.77"
+description = "Streaming LR parsing over tree-sitter parse tables, without building a tree"
+license = "MIT"
+readme = "rust/README.md"
+repository = "https://github.com/Dekker1/tree-feller"
+categories = ["parsing", "parser-implementations"]
+keywords = ["tree-sitter", "parser", "lr", "streaming", "incremental"]
+include = [
+  "/Cargo.toml",
+  "/LICENSE",
+  "/rust/README.md",
+  "/rust/build.rs",
+  "/rust/src/*.rs",
+  "/rust/tests/*.rs",
+  "/src/*.c",
+  "/src/*.h",
+  "/include/tree_feller.h",
+  "/include/tree_feller/tree_sitter/parser.h",
+]
+build = "rust/build.rs"
+
+[lib]
+path = "rust/src/lib.rs"
+
+[[test]]
+name = "differential"
+path = "rust/tests/differential.rs"
+
+[dependencies]
+# The `LanguageFn` every generated grammar crate exports as `LANGUAGE`.
+tree-sitter-language = "0.1"
+
+[build-dependencies]
+cc = "1"
+
+[dev-dependencies]
+# Pinned to the version the C test suite compares against.
+tree-sitter = "=0.26.12"
+
+# Grammars to test against.
+tree-sitter-c = "0.24"
+tree-sitter-go = "0.25"
+tree-sitter-regex = "0.25"
