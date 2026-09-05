@@ -1,5 +1,5 @@
-// Phase 3: malformed input must be refused, at a sensible place, without
-// wandering past the damage.
+// Malformed input must be refused, at a sensible place, without wandering past
+// the damage.
 #include <stdio.h>
 #include <string.h>
 

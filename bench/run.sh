@@ -1,6 +1,6 @@
 #!/bin/sh
-# Phase 6 benchmark. One process per (mode, file), because peak RSS is a
-# whole-process high-water mark. Files are given smallest first.
+# One process per (mode, file), because peak RSS is a whole-process high-water
+# mark. Files are given smallest first.
 #
 #   bench/run.sh <file>...
 #

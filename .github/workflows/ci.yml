@@ -102,7 +102,7 @@ jobs:
           git ls-files 'src/*.c' 'tools/*.c' 'tests/test_*.c' 'bench/*.c' \
             | xargs clang-tidy -p build --warnings-as-errors='*'
 
-  # Test again under with sanitizers.
+  # The whole suite again, under sanitizers.
   sanitize:
     name: Sanitize
     runs-on: ubuntu-latest

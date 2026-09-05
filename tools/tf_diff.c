@@ -1,11 +1,13 @@
 // Differential harness: tree-feller's visible node stream against a post-order
 // walk of the tree libtree-sitter builds for the same input.
 //
-//   tf_diff [--grammar datazinc|eprime|minizinc] [--corpus] [--only]
-//           [--expect-failures N] [-v] <path>...
+//   tf_diff [--grammar <name>] [--corpus] [--only] [--expect-failures N] [-v]
+//           <path>...
 //
+// The grammar is any name in tests/grammars.h, defaulting to datazinc.
 // Directories are walked for files matching the grammar's extension; paths are
-// also read from stdin when none are given.
+// also read from stdin when none are given. `--corpus` reads tree-sitter's own
+// corpus format instead, and `--only` parses without a reference.
 #include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>

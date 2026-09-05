@@ -1,4 +1,4 @@
-# Phase 6 benchmarks
+# Benchmarks
 
 `Apple M4`, macOS 26.6.2, 24 GB. Release builds (`-O3`). libminizinc at `5aa4f78a4`, its
 own Release build; the reference libtree-sitter is v0.26.12, unmodified. See "About the
@@ -120,9 +120,9 @@ O(nesting depth) claim, measured. Against `ts-parse` -- the same job, a parse of
 the same file with nothing read afterwards -- that is **11x the throughput in
 1/81st of the memory**.
 
-## Why the first attempt was slower than Bison
+## Where the time went
 
-The driver initially ran at 29.3 MB/s, below Bison's 51.4. A sampling profile put
+The driver first ran at 29.3 MB/s, below Bison's 51.4. A sampling profile put
 **38% of the time in `tf_actions`** -- the parse-table lookup -- against 23% in
 the lexer.
 
@@ -173,10 +173,10 @@ MB/s) for not copying the runs around. `tests/test_fold.c` pins the invariant th
 makes this safe -- the sequence of visible nodes, with spans, is identical folded
 or not, across all three grammars including the two that use aliases.
 
-## Second round: closing on Bison
+## What the rest of the gap was
 
-The driver floor was 66.3 MB/s and `feller-fold` 41.9, against Bison's 55.7. Four
-changes, all measured one at a time:
+With the floor at 66.3 MB/s and `feller-fold` at 41.9, four more changes, each
+measured on its own:
 
 - **Flatten the field maps.** `tf_field_map` hands back a list per production and
   resolving one child meant scanning it -- once per value on a data file. Same
@@ -234,9 +234,11 @@ ids into a checksum and returns. So tree-feller is **11% behind while doing
 substantially less work**, and the real deficit is larger by however much a
 loader costs.
 
-The AST-to-AST number is the one that decides this, and it is not measured. It
-needs the worked `.dzn` loader driven from reduce events, compared through
-`tests/parse_diff.cpp`. Until then the only claim these numbers support is the one
-about `parser_ts.cpp`, plus the memory result -- 1.2x the input against Bison's
-16.8x -- which does hold regardless of what is built on top, because it is a
-property of not retaining a tree.
+The AST-to-AST number is the one that decides this, and it is not measured here.
+It needs a `.dzn` loader driven from reduce events, which lives in the gitignored
+`integration/` harness and needs a libminizinc build; measured there, tree-feller
+is 1.24x slower than Bison building the same AST. Until that is reproducible from
+this repository, what these numbers support is the claim about `parser_ts.cpp`,
+plus the memory result -- 1.2x the input against Bison's 16.8x -- which holds
+regardless of what is built on top, because it is a property of not retaining a
+tree.

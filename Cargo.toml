@@ -1,3 +1,7 @@
+# At the repository root rather than in rust/, because `cargo package` only
+# collects files beneath the manifest: a manifest inside rust/ would publish
+# bindings with no C library behind them. Same layout, same reason, as the
+# tree-sitter grammar crates.
 [package]
 name = "tree-feller"
 version = "0.1.0"

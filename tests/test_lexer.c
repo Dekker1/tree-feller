@@ -1,6 +1,6 @@
-// Phase 2: the token stream tree-feller's lexer produces must equal the leaf
-// sequence of the tree libtree-sitter builds -- symbols, byte spans and points,
-// extras included.
+// The token stream tree-feller's lexer produces must equal the leaf sequence of
+// the tree libtree-sitter builds -- symbols, byte spans and points, extras
+// included.
 //
 // Each leaf records the parse state it was lexed in (ts_subtree_parse_state), so
 // the reference tree supplies the state sequence and the lexer can be checked on
@@ -78,8 +78,8 @@ static void check(const char *label, const TSLanguage *ts, const char *source, s
   TSParser *parser = ts_parser_new();
   ts_parser_set_language(parser, ts);
   TSTree *tree = ts_parser_parse_string(parser, NULL, source, (uint32_t)size);
-  // Error recovery is Phase 3's problem; here the reference must be a clean parse
-  // or the leaf sequence contains tokens lexed in ERROR_STATE.
+  // The reference must be a clean parse, or the leaf sequence contains tokens
+  // lexed in ERROR_STATE, which says nothing about the lexer.
   if (ts_node_has_error(ts_tree_root_node(tree))) {
     if (tolerate_reference_errors) {
       skipped++;

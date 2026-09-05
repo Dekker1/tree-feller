@@ -1,5 +1,5 @@
-// Phase 1: exhaustive agreement between tree-feller's table accessors and
-// tree-sitter's own, over every state and every symbol of all three grammars.
+// Exhaustive agreement between tree-feller's table accessors and tree-sitter's
+// own, over every state and every symbol of every grammar in grammars.h.
 #include <stdio.h>
 #include <stdlib.h>
 

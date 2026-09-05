@@ -150,8 +150,8 @@ endif()
 if(TF_BUILD_TESTS)
   enable_testing()
 
-  # Every state x every symbol against libtree-sitter's own accessors, for all
-  # six grammars. Exhaustive, and the only test that can catch an ABI drift.
+  # Every state x every symbol against libtree-sitter's own accessors, for every
+  # grammar. Exhaustive, and the only test that can catch an ABI drift.
   add_executable(test_tables tests/test_tables.c)
   target_link_libraries(test_tables PRIVATE tf_testing ts_internal)
   target_include_directories(test_tables PRIVATE src)
