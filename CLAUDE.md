@@ -45,7 +45,18 @@ tree-feller.
   zero-length copy from a null pointer passes on macOS and fails on Linux — under
   UBSan *and* under clang-tidy, whose `NonNullParamChecker` only fires there.
   Pinning the tool version does not make the platforms agree. Sanitizers also run
-  separately, ASan and UBSan, as CI does.
+  separately, ASan and UBSan, as CI does. To check a lint or sanitizer result the
+  way CI will see it, run it in a container rather than pushing to find out:
+
+  ```sh
+  podman run --rm -v "$PWD":/w:ro ubuntu:24.04 bash -c '
+    apt-get update -qq && apt-get install -y -qq python3-venv cmake ninja-build gcc git
+    cp -r /w /tmp/repo && cd /tmp/repo && python3 -m venv /tmp/v
+    /tmp/v/bin/pip install -q clang-tidy==21.1.6
+    cmake -S . -B build -G Ninja -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+    git ls-files "src/*.c" "tools/*.c" "tests/test_*.c" "bench/*.c" \
+      | xargs /tmp/v/bin/clang-tidy -p build --warnings-as-errors="*"'
+  ```
 - **Field order in `TFLexer` is load-bearing** for the hot loop. Add to the end.
 
 ## Performance

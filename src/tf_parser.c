@@ -596,11 +596,14 @@ static void tf_forest__build(TFForest *self, const TFBranch *branch, uint32_t ba
     }
     uint32_t first_child = self->link_count;
     // An empty production takes nothing, and `cells` may not be allocated at all
-    // yet; memcpy from a null pointer is undefined even for zero bytes.
-    // Taking anything at all means cells were pushed, so `cells` is allocated;
-    // the analyser cannot carry that from `tf_forest__push_cell` to here.
+    // yet; memcpy from a null pointer is undefined even for zero bytes. Taking
+    // anything at all means `cell_count` was incremented, which only happens
+    // after `tf_forest__push_cell` allocates -- but the analyser cannot carry
+    // that here. Which of the two checks fires depends on the platform: glibc
+    // declares memcpy non-null and other libcs do not, so this is reported on
+    // Linux and not on macOS.
     if (taken > 0) {
-      // NOLINTNEXTLINE(clang-analyzer-unix.cstring.NullArg)
+      // NOLINTNEXTLINE(clang-analyzer-unix.cstring.NullArg,clang-analyzer-core.NonNullParamChecker)
       memcpy(&self->links[first_child], &self->cells[saved - taken], taken * sizeof(uint32_t));
     }
     self->link_count += taken;
