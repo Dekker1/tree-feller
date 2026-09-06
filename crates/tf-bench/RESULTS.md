@@ -4,8 +4,14 @@
 own Release build; the reference libtree-sitter is v0.26.12, unmodified. See "About the
 reference" below -- unmodified is not the same as fastest.
 
-Reproduce with `bench/run.sh <file>...`. One process per (mode, file), because
-`ru_maxrss` is a whole-process high-water mark.
+These were taken with a C harness that has since been replaced by the divan
+benchmarks in this crate, which run under CodSpeed. They are kept because they
+are the measured basis for what the library claims, and because the Rust
+benchmarks do not reproduce all of it: peak RSS needs one process per
+measurement, and the Bison and `parser_ts.cpp` columns need a libminizinc build.
+
+`reference.rs` keeps the part that matters most -- tree-feller against
+libtree-sitter on the same input -- reproducible with `cargo bench`.
 
 ## Corpus
 

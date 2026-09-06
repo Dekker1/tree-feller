@@ -1,0 +1,52 @@
+[package]
+name = "tree-feller"
+description = "Streaming LR parsing over tree-sitter parse tables, without building a tree"
+categories = ["parsing", "parser-implementations"]
+keywords = ["tree-sitter", "parser", "lr", "streaming", "incremental"]
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+include = [
+  "/Cargo.toml",
+  "/README.md",
+  "/binding_rust/build.rs",
+  "/binding_rust/ffi.rs",
+  "/binding_rust/lib.rs",
+  "/include/tree_feller.h",
+  "/include/tree_feller/tree_sitter/parser.h",
+  "/src/*.c",
+  "/src/*.h",
+]
+build = "binding_rust/build.rs"
+
+[lib]
+path = "binding_rust/lib.rs"
+
+# The tests live in the repository's one `tests/` directory.
+[[test]]
+name = "differential"
+path = "../tests/differential.rs"
+
+[[test]]
+name = "errors"
+path = "../tests/errors.rs"
+
+[[test]]
+name = "options"
+path = "../tests/options.rs"
+
+[dependencies]
+tree-sitter-language.workspace = true
+
+[build-dependencies]
+cc = "1"
+
+[dev-dependencies]
+tree-sitter.workspace = true
+tree-sitter-c.workspace = true
+tree-sitter-go.workspace = true
+tree-sitter-regex.workspace = true

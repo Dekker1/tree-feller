@@ -16,7 +16,6 @@ else()
   set(tf_default OFF)
 endif()
 option(TF_BUILD_TESTS "Build the tests (fetches grammars and libtree-sitter)" ${tf_default})
-option(TF_BUILD_BENCHMARKS "Build the benchmarks" ${tf_default})
 option(TF_INSTALL "Generate install rules" ${tf_default})
 
 include(GNUInstallDirs)
@@ -28,22 +27,22 @@ include(GNUInstallDirs)
 # parser.c and links it against this.
 
 add_library(tree_feller
-  src/tf_file.c
-  src/tf_language.c
-  src/tf_lexer.c
-  src/tf_parser.c
-  src/tf_visible.c
+  lib/src/tf_file.c
+  lib/src/tf_language.c
+  lib/src/tf_lexer.c
+  lib/src/tf_parser.c
+  lib/src/tf_visible.c
 )
 add_library(tree_feller::tree_feller ALIAS tree_feller)
 
 target_include_directories(tree_feller
   PUBLIC
-    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
+    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/lib/include>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 
   PRIVATE
-    src
-    include/tree_feller)
+    lib/src
+    lib/include/tree_feller)
 # For compiling a consumer's own generated parser.c, which includes
 # "tree_sitter/parser.h". That header is installed under `tree_feller/` so that
 # it cannot shadow the copy shipping with a grammar, which means it is not on
@@ -51,7 +50,7 @@ target_include_directories(tree_feller
 add_library(tree_feller_parser_header INTERFACE)
 add_library(tree_feller::parser_header ALIAS tree_feller_parser_header)
 target_include_directories(tree_feller_parser_header INTERFACE
-  $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/tree_feller>
+  $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/lib/include/tree_feller>
   $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/tree_feller>)
 set_target_properties(tree_feller_parser_header PROPERTIES EXPORT_NAME parser_header)
 
@@ -76,8 +75,8 @@ if(TF_INSTALL)
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
-  install(FILES include/tree_feller.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
-  install(DIRECTORY include/tree_feller DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+  install(FILES lib/include/tree_feller.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+  install(DIRECTORY lib/include/tree_feller DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 
   install(EXPORT tree_fellerTargets
     FILE tree_fellerTargets.cmake
@@ -105,12 +104,13 @@ if(TF_INSTALL)
 endif()
 
 # ---------------------------------------------------------------------------
-# Tests and benchmarks
+# Tests
 #
-# Everything below needs grammars, and the differential tests need libtree-sitter
+# Benchmarks live in `crates/tf-bench` and are run with cargo; what is left
+# here is what cannot be done from Rust. Everything below needs grammars, and the differential tests need libtree-sitter
 # to compare against. Both are fetched; neither is required to use the library.
 
-if(TF_BUILD_TESTS OR TF_BUILD_BENCHMARKS)
+if(TF_BUILD_TESTS)
   include(${PROJECT_SOURCE_DIR}/cmake/TreeFellerGrammars.cmake)
   tf_add_grammars()
 
@@ -154,28 +154,24 @@ if(TF_BUILD_TESTS)
   # grammar. Exhaustive, and the only test that can catch an ABI drift.
   add_executable(test_tables tests/test_tables.c)
   target_link_libraries(test_tables PRIVATE tf_testing ts_internal)
-  target_include_directories(test_tables PRIVATE src)
+  target_include_directories(test_tables PRIVATE lib/src)
   add_test(NAME tables COMMAND test_tables)
 
   add_executable(test_lexer tests/test_lexer.c)
   target_link_libraries(test_lexer PRIVATE tf_testing ts_internal)
-  target_include_directories(test_lexer PRIVATE src)
+  target_include_directories(test_lexer PRIVATE lib/src)
   add_test(NAME lexer COMMAND test_lexer)
 
-  # Checked against the ICU headers inside the fetched libtree-sitter, which is
-  # why this library does not carry a copy of them.
   add_executable(test_utf8 tests/test_utf8.c)
   target_link_libraries(test_utf8 PRIVATE tree_feller)
-  target_include_directories(test_utf8 PRIVATE src ${tree-sitter_SOURCE_DIR}/lib/src)
+  target_include_directories(test_utf8 PRIVATE lib/src ${tree-sitter_SOURCE_DIR}/lib/src)
   add_test(NAME utf8 COMMAND test_utf8)
 
-  add_executable(test_errors tests/test_errors.c)
-  target_link_libraries(test_errors PRIVATE tf_testing)
-  add_test(NAME errors COMMAND test_errors)
-
-  add_executable(test_fold tests/test_fold.c)
-  target_link_libraries(test_fold PRIVATE tf_testing)
-  add_test(NAME fold COMMAND test_fold)
+  # The public C surface, walked from C. Behaviour lives in the Rust tests; this
+  # is here so that using the library from C stays a tested configuration.
+  add_executable(test_c_api tests/test_c_api.c)
+  target_link_libraries(test_c_api PRIVATE tf_testing)
+  add_test(NAME c_api COMMAND test_c_api)
 
   # The acceptance test: the node stream against a walk of the tree real
   # libtree-sitter builds. Also runnable over a directory -- see the README.
@@ -219,10 +215,4 @@ if(TF_BUILD_TESTS)
       endif()
     endforeach()
   endif()
-endif()
-
-# `getrusage` for peak RSS, so POSIX-only like tf_diff.
-if(TF_BUILD_BENCHMARKS AND NOT WIN32)
-  add_executable(tf_bench bench/tf_bench.c)
-  target_link_libraries(tf_bench PRIVATE tf_testing tree-sitter)
 endif()

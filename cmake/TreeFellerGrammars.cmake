@@ -103,7 +103,7 @@ function(tf_add_grammars)
     "${datazinc_parser}" "${minizinc_parser}" "${eprime_parser}")
   # The generated parsers include "tree_sitter/parser.h" and are not warning
   # clean; neither is ours to fix.
-  target_include_directories(tf_grammars PRIVATE "${PROJECT_SOURCE_DIR}/include/tree_feller")
+  target_include_directories(tf_grammars PRIVATE "${PROJECT_SOURCE_DIR}/lib/include/tree_feller")
   set_target_properties(tf_grammars PROPERTIES COMPILE_WARNING_AS_ERROR OFF)
   target_compile_options(tf_grammars PRIVATE -w)
 endfunction()

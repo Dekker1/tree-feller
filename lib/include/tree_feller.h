@@ -176,9 +176,16 @@ typedef struct {
   //
   // The parent then sees one child where it would have seen the run, under the
   // hidden rule's own symbol -- so a consumer that folds is no longer being
-  // handed the same shape a CST walk would give it. Return NULL to decline, per
-  // node; declining everything, or leaving this NULL, reproduces a CST walk
-  // exactly. `node->children` is only valid for the duration of the call.
+  // handed the same shape a CST walk would give it.
+  //
+  // Return NULL to decline. That answer is taken for the *symbol*, not just this
+  // node, and it will not be asked again: an offer hands over every child in the
+  // run, and a repetition's run grows by one each time it reduces, so re-asking
+  // a symbol that has already said no costs O(n^2) across the list. Leaving this
+  // callback NULL is the cheaper way to decline everything, and reproduces a CST
+  // walk exactly.
+  //
+  // `node->children` is only valid for the duration of the call.
   void *(*on_hidden)(void *payload, const TFVisibleNode *node);
 
   // When set, an anonymous *leaf* that fills no field is neither reported nor

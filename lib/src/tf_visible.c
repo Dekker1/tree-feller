@@ -46,6 +46,13 @@ typedef struct {
   TFVisibleChild *scratch;
   uint32_t scratch_capacity;
 
+  // Symbols whose runs the consumer has already refused to fold. Offering a run
+  // means handing over every child in it, and a repetition's run grows by one
+  // each time it reduces -- so re-offering a symbol that was declined once costs
+  // O(n^2) over the list for an answer that has not changed. One byte per
+  // symbol, allocated only if a fold is declined at all.
+  uint8_t *declined;
+
   // The most recent reduction. The last one is the root's, and the root has no
   // parent to describe it -- the driver hands back only the packed value.
   TSSymbol root_symbol;
@@ -183,7 +190,8 @@ static void *tf_filter__on_reduce(void *payload, const TFReduction *reduction) {
   // which also keeps supertypes out of it: those always wrap exactly one child,
   // so there is nothing to collapse.
   uint32_t owned = self->arena_len - base;
-  if (owned > 1 && self->sink->on_hidden && tf_foldable(lang, reduction->symbol)) {
+  if (owned > 1 && self->sink->on_hidden && tf_foldable(lang, reduction->symbol) &&
+      !(self->declined && self->declined[reduction->symbol])) {
     TFVisibleNode node = {
         .symbol = tf_public_symbol(lang, reduction->symbol),
         .production_id = production_id,
@@ -197,6 +205,11 @@ static void *tf_filter__on_reduce(void *payload, const TFReduction *reduction) {
         .children = &self->arena[base],
     };
     void *folded = self->sink->on_hidden(self->sink->payload, &node);
+    if (!folded) {
+      // Declined. Take that as the answer for this symbol and stop asking.
+      if (!self->declined) self->declined = calloc(lang->ts->symbol_count, sizeof(uint8_t));
+      if (self->declined) self->declined[reduction->symbol] = 1;
+    }
     if (folded) {
       self->arena[base] = (TFVisibleChild){
           .symbol = node.symbol,
@@ -261,5 +274,6 @@ bool tf_parse_visible(const TFLanguage *lang, const void *source, uint32_t size,
 
   free(self.arena);
   free(self.scratch);
+  free(self.declined);
   return ok;
 }

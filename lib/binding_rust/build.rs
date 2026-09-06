@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 fn main() {
-    // The manifest sits at the repository root, so the C library is right here.
+    // The manifest sits beside the C library, in `lib/`.
     let root = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     let src = root.join("src");
 

@@ -84,7 +84,7 @@ jobs:
 
       - name: clang-format
         run: |
-          git ls-files 'src/*.c' 'src/*.h' 'tests/test_*.c' 'tools/*.c' 'bench/*.c' \
+          git ls-files 'lib/src/*.c' 'lib/src/*.h' 'tests/test_*.c' 'tools/*.c' \
             | xargs clang-format --dry-run -Werror
 
       # clang-tidy needs a compilation database, which needs the grammars.
@@ -99,7 +99,7 @@ jobs:
 
       - name: clang-tidy
         run: |
-          git ls-files 'src/*.c' 'tools/*.c' 'tests/test_*.c' 'bench/*.c' \
+          git ls-files 'lib/src/*.c' 'tests/test_*.c' 'tools/*.c' \
             | xargs clang-tidy -p build --warnings-as-errors='*'
 
   # The whole suite again, under sanitizers.
@@ -147,3 +147,24 @@ jobs:
         run: |
           cd target/package/tree-feller-*/
           cargo test
+
+  # Benchmarks under CodSpeed, so a throughput regression shows up on the pull
+  # request. It instruments rather than timing, which is why this can run on a
+  # shared runner at all.
+  benchmark:
+    name: Benchmark
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # `tf-bench` regenerates the JSON grammar at ABI 15, which needs the CLI.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: CodSpeedHQ/action@v3
+        with:
+          run: cargo codspeed run
+          token: ${{ secrets.CODSPEED_TOKEN }}

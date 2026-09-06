@@ -1,51 +1,28 @@
-# At the repository root rather than in rust/, because `cargo package` only
-# collects files beneath the manifest: a manifest inside rust/ would publish
-# bindings with no C library behind them. Same layout, same reason, as the
-# tree-sitter grammar crates.
-[package]
-name = "tree-feller"
+# Workspace only. The `tree-feller` crate itself lives in `lib/`, beside the C
+# sources it has to ship: `cargo package` collects nothing above the manifest
+# directory, so a manifest anywhere else would publish bindings with no library
+# behind them. Same reason tree-sitter puts its crate in `lib/`.
+[workspace]
+members = ["lib", "crates/*"]
+resolver = "2"
+
+[workspace.package]
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.77"
-description = "Streaming LR parsing over tree-sitter parse tables, without building a tree"
 license = "MIT"
-readme = "rust/README.md"
 repository = "https://github.com/Dekker1/tree-feller"
-categories = ["parsing", "parser-implementations"]
-keywords = ["tree-sitter", "parser", "lr", "streaming", "incremental"]
-include = [
-  "/Cargo.toml",
-  "/LICENSE",
-  "/rust/README.md",
-  "/rust/build.rs",
-  "/rust/src/*.rs",
-  "/rust/tests/*.rs",
-  "/src/*.c",
-  "/src/*.h",
-  "/include/tree_feller.h",
-  "/include/tree_feller/tree_sitter/parser.h",
-]
-build = "rust/build.rs"
 
-[lib]
-path = "rust/src/lib.rs"
-
-[[test]]
-name = "differential"
-path = "rust/tests/differential.rs"
-
-[dependencies]
-# The `LanguageFn` every generated grammar crate exports as `LANGUAGE`.
-tree-sitter-language = "0.1"
-
-[build-dependencies]
-cc = "1"
-
-[dev-dependencies]
-# Pinned to the version the C test suite compares against.
+[workspace.dependencies]
+tree-feller = { path = "lib" }
 tree-sitter = "=0.26.12"
-
-# Grammars to test against.
+tree-sitter-language = "0.1"
+# Grammars that load: ABI 15, no external scanner.
 tree-sitter-c = "0.24"
 tree-sitter-go = "0.25"
 tree-sitter-regex = "0.25"
+tree-sitter-solidity = "1.2"
+# Not on crates.io, but they are proper crates in the shackle repository, pinned
+# to the commit the C tests fetch their tables from.
+tree-sitter-datazinc = { git = "https://github.com/shackle-rs/shackle", rev = "03b6430" }
+tree-sitter-minizinc = { git = "https://github.com/shackle-rs/shackle", rev = "03b6430" }

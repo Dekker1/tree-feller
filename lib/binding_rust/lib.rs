@@ -22,6 +22,32 @@
 //! # }
 //! ```
 //!
+//! A file whose top level is one very long list keeps every member live at once,
+//! because a hidden repetition's children cannot be attributed until the visible
+//! node above them closes. Implement [`Visit::hidden`] to fold each run as it
+//! completes and memory stays proportional to nesting depth; pass
+//! [`Options::named_only`] to drop the punctuation a consumer does not read.
+//!
+//! ```
+//! # use tree_feller::{Child, Language, Node, Options, Visit};
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! struct Count(usize);
+//! impl Visit<usize> for Count {
+//!     fn node(&mut self, _n: Node<'_>, kids: &mut Vec<Child<usize>>) -> usize {
+//!         self.0 += 1;
+//!         kids.drain(..).map(|c| c.value).sum::<usize>() + 1
+//!     }
+//!     fn hidden(&mut self, _n: Node<'_>, kids: &mut Vec<Child<usize>>) -> Option<usize> {
+//!         Some(kids.drain(..).map(|c| c.value).sum())
+//!     }
+//! }
+//! let language = Language::new(tree_sitter_c::LANGUAGE)?;
+//! let n = language.parse_with(b"int a[] = {1, 2, 3};", Options::default().named_only(true), Count(0))?;
+//! assert!(n > 0);
+//! # Ok(())
+//! # }
+//! ```
+//!
 //! The grammar must be ABI 15 and must not use an external scanner; both are
 //! checked when it is loaded.
 
@@ -112,10 +138,58 @@ pub struct Child<V> {
 
 /// Called once per node, children before parents.
 ///
+/// A closure is enough for the common case and implements this automatically.
+/// Implement it directly when you want to fold hidden runs -- see [`Visit::hidden`].
+///
 /// `children` is a buffer the parser reuses, so take what you need out of it --
-/// by `drain`, or otherwise. Anything left behind is dropped. Capture whatever
-/// state the visit needs; there is no separate trait to implement.
-pub type Visit<'a, V> = dyn FnMut(Node<'_>, &mut Vec<Child<V>>) -> V + 'a;
+/// by `drain`, or otherwise. Anything left behind is dropped.
+pub trait Visit<V> {
+    /// A node has been completed, after all of its children.
+    fn node(&mut self, node: Node<'_>, children: &mut Vec<Child<V>>) -> V;
+
+    /// A hidden rule has completed with more than one visible child.
+    ///
+    /// Those children cannot be handed to anyone until the nearest *visible*
+    /// ancestor reduces, because only then is it known what they are children
+    /// of. For the repetition behind a long list that ancestor is the whole
+    /// list, so a file with one array of a few million values keeps every member
+    /// live at once. Returning `Some` folds the run into a single value as it
+    /// completes, and memory stays proportional to nesting depth instead.
+    ///
+    /// The parent then sees one child where it would have seen the run, so a
+    /// visitor that folds is no longer being handed the shape a CST walk gives.
+    ///
+    /// Returning `None` declines, and that answer is taken for the *symbol* --
+    /// it will not be asked again. An offer hands over every child in the run,
+    /// and a repetition's run grows by one each time it reduces, so re-asking
+    /// after a refusal is quadratic across the list. The default implementation
+    /// declines everything, which reproduces a CST walk exactly.
+    fn hidden(&mut self, _node: Node<'_>, _children: &mut Vec<Child<V>>) -> Option<V> {
+        None
+    }
+}
+
+impl<V, F: FnMut(Node<'_>, &mut Vec<Child<V>>) -> V> Visit<V> for F {
+    fn node(&mut self, node: Node<'_>, children: &mut Vec<Child<V>>) -> V {
+        self(node, children)
+    }
+}
+
+/// What a parse reports. The default is what a tree-sitter CST walk gives.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Options {
+    /// Skip anonymous *leaves* that fill no field: the punctuation, which on a
+    /// list-heavy file is about half the nodes. Anonymous tokens that do fill a
+    /// field, such as an `operator`, are still reported.
+    pub named_only: bool,
+}
+
+impl Options {
+    pub fn named_only(mut self, yes: bool) -> Self {
+        self.named_only = yes;
+        self
+    }
+}
 
 /// Why a parse stopped.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -199,23 +273,50 @@ impl<V> Slab<V> {
         }
         value
     }
+
+    /// How many slots are free right now. Paired with `rollback` below.
+    fn mark(&self) -> usize {
+        self.free.len()
+    }
+
+    /// Put a value back where it came from. Used when a visitor is offered a
+    /// hidden run and declines it: the driver then leaves the run in place, so
+    /// the handles it is still holding have to keep resolving.
+    fn restore(&mut self, handle: *mut c_void, value: V) {
+        self.items[(handle as usize) - 1] = Some(value);
+    }
+
+    /// Undo the frees since `mark`.
+    ///
+    /// The slots freed by taking a run's children are the last entries in the
+    /// free list -- nothing else runs in between, because the visitor is only
+    /// handed values and never reaches the slab. So this is a truncate rather
+    /// than a search: looking each index up instead made declining a fold cost
+    /// a scan of the whole free list, which on a file that is one long list is
+    /// quadratic.
+    fn rollback(&mut self, mark: usize) {
+        self.free.truncate(mark);
+    }
 }
 
-struct State<V, F> {
-    visit: F,
+struct State<V, T: Visit<V>> {
+    visit: T,
     values: Slab<V>,
     children: Vec<Child<V>>,
+    /// The slab handles behind `children`, kept so a declined fold can put them
+    /// back exactly where they were.
+    handles: Vec<*mut c_void>,
     panic: Option<Box<dyn std::any::Any + Send>>,
 }
 
-unsafe extern "C" fn on_node<V, F>(
+/// Collects a node's children out of the slab and hands them to the visitor.
+/// Shared by both callbacks, which differ only in what they do with the result.
+unsafe fn dispatch<V, T: Visit<V>>(
     payload: *mut c_void,
     node: *const ffi::TFVisibleNode,
-) -> *mut c_void
-where
-    F: FnMut(Node<'_>, &mut Vec<Child<V>>) -> V,
-{
-    let state = &mut *(payload as *mut State<V, F>);
+    fold: bool,
+) -> *mut c_void {
+    let state = &mut *(payload as *mut State<V, T>);
     // A visitor that panicked has already unwound as far as it may: crossing back
     // into C would be undefined. Stop doing work and re-raise once C is done.
     if state.panic.is_some() {
@@ -225,10 +326,15 @@ where
 
     let result = catch_unwind(AssertUnwindSafe(|| {
         state.children.clear();
+        state.handles.clear();
+        let mark = state.values.mark();
         if raw.child_count > 0 {
             let slice = std::slice::from_raw_parts(raw.children, raw.child_count as usize);
             state.children.reserve(slice.len());
             for child in slice {
+                if fold {
+                    state.handles.push(child.value);
+                }
                 // A child with no value cannot happen: every visible node was
                 // reported before its parent. If it ever does, it is a bug here,
                 // not something to paper over.
@@ -244,9 +350,29 @@ where
                 });
             }
         }
-        let value = (state.visit)(Node { raw }, &mut state.children);
-        state.children.clear();
-        state.values.insert(value)
+        let handed = Node { raw };
+        let value = if fold {
+            state.visit.hidden(handed, &mut state.children)
+        } else {
+            Some(state.visit.node(handed, &mut state.children))
+        };
+        // Declining to fold means the children must go back exactly as they were,
+        // so the eventual parent still sees the run.
+        match value {
+            Some(value) => {
+                state.children.clear();
+                state.values.insert(value)
+            }
+            None => {
+                // Declined. The driver will leave the run alone, so every child
+                // has to go back under the handle it arrived with.
+                for (child, handle) in state.children.drain(..).zip(state.handles.drain(..)) {
+                    state.values.restore(handle, child.value);
+                }
+                state.values.rollback(mark);
+                std::ptr::null_mut()
+            }
+        }
     }));
 
     match result {
@@ -256,6 +382,20 @@ where
             std::ptr::null_mut()
         }
     }
+}
+
+unsafe extern "C" fn on_node<V, T: Visit<V>>(
+    payload: *mut c_void,
+    node: *const ffi::TFVisibleNode,
+) -> *mut c_void {
+    dispatch::<V, T>(payload, node, false)
+}
+
+unsafe extern "C" fn on_hidden<V, T: Visit<V>>(
+    payload: *mut c_void,
+    node: *const ffi::TFVisibleNode,
+) -> *mut c_void {
+    dispatch::<V, T>(payload, node, true)
 }
 
 // ---------------------------------------------------------------------------
@@ -333,28 +473,37 @@ impl Language {
 
     /// Parse `source`, reporting each node to `visitor`, and return whatever it
     /// returned for the root.
-    pub fn parse<V, F>(&self, source: &[u8], visit: F) -> Result<V, ParseError>
-    where
-        F: FnMut(Node<'_>, &mut Vec<Child<V>>) -> V,
-    {
+    ///
+    /// The node stream is what a tree-sitter CST walk gives. See
+    /// [`Language::parse_with`] to change that.
+    pub fn parse<V, T: Visit<V>>(&self, source: &[u8], visitor: T) -> Result<V, ParseError> {
+        self.parse_with(source, Options::default(), visitor)
+    }
+
+    /// As [`Language::parse`], with the reporting rules changed.
+    pub fn parse_with<V, T: Visit<V>>(
+        &self,
+        source: &[u8],
+        options: Options,
+        visitor: T,
+    ) -> Result<V, ParseError> {
         assert!(
             source.len() <= u32::MAX as usize,
             "source is larger than 4 GiB"
         );
 
-        let mut state = State::<V, F> {
-            visit,
+        let mut state = State::<V, T> {
+            visit: visitor,
             values: Slab::new(),
             children: Vec::new(),
+            handles: Vec::new(),
             panic: None,
         };
         let sink = ffi::TFVisibleSink {
             payload: &mut state as *mut _ as *mut c_void,
-            on_node: Some(on_node::<V, F>),
-            // Folding hidden runs changes the shape a visitor sees, so it is not
-            // something to turn on behind its back.
-            on_hidden: None,
-            named_only: false,
+            on_node: Some(on_node::<V, T>),
+            on_hidden: Some(on_hidden::<V, T>),
+            named_only: options.named_only,
         };
 
         let mut error = ffi::TFError::default();
@@ -389,14 +538,12 @@ impl Language {
 
     /// Parse a file, mapped rather than read: it costs address space, not
     /// committed memory. Fails above 4 GiB, the limit of a byte offset.
-    pub fn parse_file<V, F>(
+    pub fn parse_file<V, T: Visit<V>>(
         &self,
         path: impl AsRef<Path>,
-        visit: F,
-    ) -> Result<V, Box<dyn std::error::Error>>
-    where
-        F: FnMut(Node<'_>, &mut Vec<Child<V>>) -> V,
-    {
+        options: Options,
+        visitor: T,
+    ) -> Result<V, Box<dyn std::error::Error>> {
         let path = path.as_ref();
         let text = CString::new(path.to_string_lossy().as_bytes())
             .map_err(|_| Error("path contains a null byte".to_owned()))?;
@@ -412,7 +559,7 @@ impl Language {
         }
         let source =
             unsafe { std::slice::from_raw_parts(file.data as *const u8, file.size as usize) };
-        let result = self.parse(source, visit);
+        let result = self.parse_with(source, options, visitor);
         unsafe { ffi::tf_file_close(&mut file) };
         Ok(result?)
     }

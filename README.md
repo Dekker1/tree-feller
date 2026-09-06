@@ -27,7 +27,7 @@ nothing reads:
 | **tree-feller, raw reduction stream** | **72.4 MB/s** | **1.2× input** |
 
 63 MB peak on a 61.7 MB file — about 1.3 MB of actual parser state. How much that is
-worth depends on the workload; [`bench/RESULTS.md`](bench/RESULTS.md) has the method,
+worth depends on the workload; [`crates/tf-bench/RESULTS.md`](crates/tf-bench/RESULTS.md) has the method,
 the rest of the numbers, and the cases where tree-feller loses.
 
 ## Quick start
@@ -71,7 +71,7 @@ ctest --test-dir build
 
 The library itself needs nothing but a C11 compiler. Tests and benchmarks fetch grammars
 and libtree-sitter at configure time, so the first configure needs network access;
-`-DTF_BUILD_TESTS=OFF -DTF_BUILD_BENCHMARKS=OFF` skips that.
+`-DTF_BUILD_TESTS=OFF` skips that.
 
 ### Linking it
 
@@ -211,7 +211,7 @@ anything else rather than reading a struct laid out differently — `TSLanguage`
 reordered fields across ABI versions, and reading the wrong one silently yields nonsense.
 
 This is the one coupling that matters, so it is checked three ways: the load-time
-`abi_version` check; `include/tree_feller/tree_sitter/parser.h`, which is the ABI-15
+`abi_version` check; `lib/include/tree_feller/tree_sitter/parser.h`, which is the ABI-15
 header vendored verbatim, so the struct layout compiled against is fixed and visible; and
 `tests/test_tables.c`, which walks **every state × every symbol** of all seven test
 grammars and asserts agreement with libtree-sitter's own `ts_language_*` accessors.
@@ -222,7 +222,7 @@ header, both copies share the `TREE_SITTER_PARSER_H_` guard, so whichever is inc
 first wins.
 
 To move to a new ABI: regenerate the grammars with the matching CLI, update `parser.h`,
-bump `TF_ABI_VERSION` in `include/tree_feller.h`, update the pinned libtree-sitter in
+bump `TF_ABI_VERSION` in `lib/include/tree_feller.h`, update the pinned libtree-sitter in
 `CMakeLists.txt`, and run `ctest`. The table test is what tells you whether the port is
 right.
 
@@ -271,14 +271,23 @@ builds and tests the library but not `tf_diff` or `tf_bench`, which walk directo
 ## Benchmarks
 
 ```sh
-bench/run.sh file ...
+cargo bench -p tf-bench
 ```
 
-One process per (mode, file), because peak RSS is a whole-process high-water mark. The
-modes separate parsing from delivering nodes from building values;
-[`bench/RESULTS.md`](bench/RESULTS.md) explains what each measures.
+Deterministic generated inputs — a few megabytes of `.dzn` and JSON, and repeated
+source for MiniZinc, C, Go and Solidity — parsed in the two configurations a consumer
+would actually pick: the full CST-equivalent view, and named nodes with hidden runs
+folded. They run under [CodSpeed](https://codspeed.io) in CI, so a throughput
+regression shows up on the pull request.
+
+Grammars come from crates: C, Go and Solidity from crates.io, DataZinc and MiniZinc as
+git dependencies on the shackle repository. JSON is the exception — it is published at
+ABI 14, which this library does not load, so `tf-bench` regenerates it at ABI 15 with
+the pinned CLI. That needs `npx`; without it the JSON benchmarks are skipped rather than
+failing the build. TOML, YAML and XML cannot be used at all — they have external
+scanners, so no amount of regenerating helps.
 
 ## Licence
 
-MIT. The only third-party file is `include/tree_feller/tree_sitter/parser.h`, which is
+MIT. The only third-party file is `lib/include/tree_feller/tree_sitter/parser.h`, which is
 tree-sitter's own header, also MIT.

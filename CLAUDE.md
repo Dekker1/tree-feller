@@ -4,9 +4,9 @@ The README covers what this is and how to build it. This is the rest.
 
 ## Invariants
 
-- **`src/` knows about no grammar.** Everything is driven from the tables. If a
+- **`lib/src/` knows about no grammar.** Everything is driven from the tables. If a
   fix needs to name a rule, it is the wrong fix.
-- **`src/tf_language.*` and `src/tf_lexer.c` are transcriptions** of tree-sitter's
+- **`lib/src/tf_language.*` and `lib/src/tf_lexer.c` are transcriptions** of tree-sitter's
   runtime, and the `file.c:line` references in their comments are the spec. The
   fetched source is at `build/_deps/tree-sitter-src/lib/src/` — read it rather
   than reasoning about what it probably does. Don't tidy these into something
@@ -58,6 +58,19 @@ tree-feller.
       | xargs /tmp/v/bin/clang-tidy -p build --warnings-as-errors="*"'
   ```
 - **Field order in `TFLexer` is load-bearing** for the hot loop. Add to the end.
+- **Offering a fold is O(run).** `on_hidden` hands over every child in the run,
+  and a repetition's run grows by one each time it reduces, so re-offering a
+  symbol after it declined is quadratic across the list. The filter caches the
+  refusal per symbol; do not "simplify" that away. It was worth 515x on a data
+  file, and the benchmarks are what found it.
+
+## Benchmarks
+
+`cargo bench -p tf-bench`, or `cargo codspeed run` as CI does. Inputs are
+generated, not checked in, so numbers do not move because someone edited a
+fixture. Grammars that are not published as crates are fetched in `build.rs`;
+JSON is regenerated at ABI 15 there because it ships at ABI 14, which needs
+`npx` -- without it those benchmarks are skipped rather than failing.
 
 ## Performance
 

@@ -1,4 +1,4 @@
 # tree-sitter's header: diffed against upstream.
-include/tree_feller/tree_sitter/parser.h
+lib/include/tree_feller/tree_sitter/parser.h
 # Test data.
 tests/corpus/**

@@ -1,0 +1,34 @@
+[package]
+name = "tf-bench"
+description = "Throughput benchmarks for tree-feller, run under CodSpeed in CI"
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[build-dependencies]
+cc = "1"
+
+[dependencies]
+tree-feller.workspace = true
+tree-sitter-c.workspace = true
+tree-sitter-go.workspace = true
+tree-sitter-solidity.workspace = true
+tree-sitter-datazinc.workspace = true
+tree-sitter-minizinc.workspace = true
+
+[dev-dependencies]
+# Under the `divan` name so `#[divan::bench]` resolves: an attribute macro path
+# is looked up as a crate, not through a `use` alias. Off CodSpeed this is
+# ordinary divan.
+divan = { package = "codspeed-divan-compat", version = "5" }
+tree-sitter.workspace = true
+
+[[bench]]
+name = "parse"
+harness = false
+
+[[bench]]
+name = "reference"
+harness = false
