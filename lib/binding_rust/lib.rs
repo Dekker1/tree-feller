@@ -56,6 +56,8 @@ use std::fmt;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::Path;
 
+/// A grammar's entry point, as its generated `tree_sitter_<name>()` crate
+/// exports it under `LANGUAGE`.
 pub use tree_sitter_language::LanguageFn;
 
 mod ffi;
@@ -105,6 +107,7 @@ impl Node<'_> {
     pub fn production_id(&self) -> u16 {
         self.raw.production_id
     }
+    /// Whether the node is named, as `ts_node_is_named` would report.
     pub fn is_named(&self) -> bool {
         self.raw.named
     }
@@ -112,15 +115,20 @@ impl Node<'_> {
     pub fn is_extra(&self) -> bool {
         self.raw.extra
     }
+    /// Byte offsets of the node in the source.
     pub fn byte_range(&self) -> std::ops::Range<u32> {
         self.raw.start_byte..self.raw.end_byte
     }
+    /// Where the node starts in the source.
     pub fn start_point(&self) -> Point {
         self.raw.start_point.into()
     }
+    /// Where the node ends in the source.
     pub fn end_point(&self) -> Point {
         self.raw.end_point.into()
     }
+    /// How many children `Visit::node` or `Visit::hidden` will be handed for
+    /// this node.
     pub fn child_count(&self) -> usize {
         self.raw.child_count as usize
     }
@@ -129,10 +137,13 @@ impl Node<'_> {
 /// One child of a node, with whatever the visitor returned for it.
 #[derive(Clone, Copy, Debug)]
 pub struct Child<V> {
+    /// The child's symbol id, with any alias its parent applied.
     pub symbol: u16,
     /// The field this child fills in its parent, or 0 for none.
     pub field_id: u16,
+    /// Whitespace or a comment: present in the tree, but not part of any rule.
     pub extra: bool,
+    /// What the visitor returned when it completed this child.
     pub value: V,
 }
 
@@ -185,6 +196,7 @@ pub struct Options {
 }
 
 impl Options {
+    /// Builder setter for the `named_only` field.
     pub fn named_only(mut self, yes: bool) -> Self {
         self.named_only = yes;
         self
@@ -196,7 +208,9 @@ impl Options {
 pub struct ParseError {
     /// Byte offset of the token that could not be used.
     pub byte: u32,
+    /// Where `byte` falls, as a row and column.
     pub point: Point,
+    /// A human-readable description of what went wrong.
     pub message: String,
 }
 
@@ -234,9 +248,9 @@ fn message_of(error: &ffi::TFError) -> String {
 
 // ---------------------------------------------------------------------------
 
-/// Values live here while the parser holds them, because it can only carry a
-/// pointer per node. Slots are reused as parents consume their children, so this
-/// stays the size of the live set rather than of the file.
+// Values live here while the parser holds them, because it can only carry a
+// pointer per node. Slots are reused as parents consume their children, so this
+// stays the size of the live set rather than of the file.
 struct Slab<V> {
     items: Vec<Option<V>>,
     free: Vec<u32>,
@@ -250,7 +264,7 @@ impl<V> Slab<V> {
         }
     }
 
-    /// Returns a handle that is never null, so a null value means "no value".
+    // Returns a handle that is never null, so a null value means "no value".
     fn insert(&mut self, value: V) -> *mut c_void {
         let index = match self.free.pop() {
             Some(index) => {
@@ -274,26 +288,26 @@ impl<V> Slab<V> {
         value
     }
 
-    /// How many slots are free right now. Paired with `rollback` below.
+    // How many slots are free right now. Paired with `rollback` below.
     fn mark(&self) -> usize {
         self.free.len()
     }
 
-    /// Put a value back where it came from. Used when a visitor is offered a
-    /// hidden run and declines it: the driver then leaves the run in place, so
-    /// the handles it is still holding have to keep resolving.
+    // Put a value back where it came from. Used when a visitor is offered a
+    // hidden run and declines it: the driver then leaves the run in place, so
+    // the handles it is still holding have to keep resolving.
     fn restore(&mut self, handle: *mut c_void, value: V) {
         self.items[(handle as usize) - 1] = Some(value);
     }
 
-    /// Undo the frees since `mark`.
-    ///
-    /// The slots freed by taking a run's children are the last entries in the
-    /// free list -- nothing else runs in between, because the visitor is only
-    /// handed values and never reaches the slab. So this is a truncate rather
-    /// than a search: looking each index up instead made declining a fold cost
-    /// a scan of the whole free list, which on a file that is one long list is
-    /// quadratic.
+    // Undo the frees since `mark`.
+    //
+    // The slots freed by taking a run's children are the last entries in the
+    // free list -- nothing else runs in between, because the visitor is only
+    // handed values and never reaches the slab. So this is a truncate rather
+    // than a search: looking each index up instead made declining a fold cost
+    // a scan of the whole free list, which on a file that is one long list is
+    // quadratic.
     fn rollback(&mut self, mark: usize) {
         self.free.truncate(mark);
     }
@@ -303,14 +317,14 @@ struct State<V, T: Visit<V>> {
     visit: T,
     values: Slab<V>,
     children: Vec<Child<V>>,
-    /// The slab handles behind `children`, kept so a declined fold can put them
-    /// back exactly where they were.
+    // The slab handles behind `children`, kept so a declined fold can put them
+    // back exactly where they were.
     handles: Vec<*mut c_void>,
     panic: Option<Box<dyn std::any::Any + Send>>,
 }
 
-/// Collects a node's children out of the slab and hands them to the visitor.
-/// Shared by both callbacks, which differ only in what they do with the result.
+// Collects a node's children out of the slab and hands them to the visitor.
+// Shared by both callbacks, which differ only in what they do with the result.
 unsafe fn dispatch<V, T: Visit<V>>(
     payload: *mut c_void,
     node: *const ffi::TFVisibleNode,
@@ -455,6 +469,7 @@ impl Language {
         Ok(Self { raw })
     }
 
+    /// The symbol's name, for diagnostics. `None` if `symbol` is out of range.
     pub fn symbol_name(&self, symbol: u16) -> Option<&str> {
         let name = unsafe { ffi::tf_language_symbol_name(self.raw, symbol) };
         if name.is_null() {
@@ -463,6 +478,7 @@ impl Language {
         unsafe { CStr::from_ptr(name) }.to_str().ok()
     }
 
+    /// The field's name, for diagnostics. `None` if `field` is out of range.
     pub fn field_name(&self, field: u16) -> Option<&str> {
         let name = unsafe { ffi::tf_language_field_name(self.raw, field) };
         if name.is_null() {
@@ -476,6 +492,9 @@ impl Language {
     ///
     /// The node stream is what a tree-sitter CST walk gives. See
     /// [`Language::parse_with`] to change that.
+    ///
+    /// Fails with a [`ParseError`], rather than panicking, if `source` is larger
+    /// than 4 GiB -- the limit of the `u32` byte offsets nodes report.
     pub fn parse<V, T: Visit<V>>(&self, source: &[u8], visitor: T) -> Result<V, ParseError> {
         self.parse_with(source, Options::default(), visitor)
     }

@@ -39,9 +39,10 @@ typedef struct TFLanguage TFLanguage;
 
 // Wraps a generated `tree_sitter_<name>()` table for use by the driver.
 // Returns NULL if the language is not ABI 15 or uses an external scanner.
-// The TSLanguage must outlive the TFLanguage. Not thread-safe to create;
-// safe to share read-only once created.
+// `error` may be NULL. The TSLanguage must outlive the TFLanguage. Not
+// thread-safe to create; safe to share read-only once created.
 TFLanguage *tf_language_load(const TSLanguage *ts, const char **error);
+// Safe to call with NULL, like free().
 void tf_language_free(TFLanguage *self);
 
 // Names for the symbols and fields the sink reports, for diagnostics. Both
@@ -107,7 +108,10 @@ typedef struct {
 
 // Parse `source` in full. On success returns true and stores the value the sink
 // returned for the root in `*root`. On the first error returns false and fills
-// `*error`; parsing does not continue past it. `root` and `error` may be NULL.
+// `*error`; parsing does not continue past it. `sink`, `root` and `error` may
+// all be NULL -- a NULL `sink` behaves as one with every callback NULL. Fails,
+// rather than truncating, if `size` exceeds 4 GiB: the same limit the byte
+// offsets in `TFToken` and `TFReduction` can address.
 bool tf_parse(const TFLanguage *lang, const void *source, size_t size, const TFSink *sink,
               void **root, TFError *error);
 
@@ -130,9 +134,10 @@ typedef struct {
 // address -- tree-sitter's limit too.
 //
 // On failure returns false and fills `error->message`; `byte` and `point` are
-// not meaningful for these errors. Close it once the parse, and anything holding
-// offsets into it, is done.
+// not meaningful for these errors. `error` may be NULL. Close it once the
+// parse, and anything holding offsets into it, is done.
 bool tf_file_open(TFFile *file, const char *path, TFError *error);
+// Safe to call on a `TFFile` that failed to open or was already closed.
 void tf_file_close(TFFile *self);
 
 // ---------------------------------------------------------------------------

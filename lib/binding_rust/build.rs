@@ -1,5 +1,5 @@
-// tree-feller is C, and so is every grammar it reads, so a C compiler is needed
-// either way; this crate binds the library rather than reimplementing it.
+//! tree-feller is C, and so is every grammar it reads, so a C compiler is needed
+//! either way; this crate binds the library rather than reimplementing it.
 use std::path::PathBuf;
 
 fn main() {

@@ -35,7 +35,7 @@ typedef struct {
   bool token_is_keyword;
 } TFLexer;
 
-// ponytail: the source is one contiguous buffer, indexed directly. A pull source
+// CONSIDERATION: the source is one contiguous buffer, indexed directly. A pull source
 // -- a ring buffer over a stream -- was designed for but not built, because
 // nothing yet needs one and an indirection on every byte is not free. What it
 // would have to guarantee, measured rather than guessed:

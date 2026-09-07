@@ -1,3 +1,7 @@
+// Implements the TSLexer callbacks tf_lexer.h declares, and tf_lexer_next's dispatch
+// of one token: the generated lex_fn, then the keyword re-lex tree-sitter itself runs
+// before accepting a word token. Ported from tree-sitter's lexer.c and parser.c; see
+// tf_lexer.h for what the single-buffer, no-included-ranges case leaves out.
 #include "tf_lexer.h"
 
 #include <stdarg.h>

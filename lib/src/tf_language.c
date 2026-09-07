@@ -1,3 +1,7 @@
+// Builds a TFLanguage from a TSLanguage: checks the grammar is one this driver
+// can run (ABI 15, no external scanner, no empty table), then expands its packed
+// tables into the arrays tf_language.h reads directly -- see there for what each
+// expansion buys and why it is safe to skip at lookup time.
 #include "tf_language.h"
 
 #include <stdlib.h>
@@ -80,7 +84,7 @@ TFLanguage *tf_language_load(const TSLanguage *ts, const char **error) {
   // 25 KB for DataZinc, 574 KB for MiniZinc -- and turns the scan into an
   // indexed load.
   //
-  // ponytail: a flat expansion, so a grammar with very many states pays for cells
+  // CONSIDERATION: a flat expansion, so a grammar with very many states pays for cells
   // that are mostly zero (18k states x 450 symbols would be 16 MB). If that ever
   // matters, expand per row on first use, or keep the packed scan above a size.
   size_t cells = (size_t)ts->state_count * ts->symbol_count;
