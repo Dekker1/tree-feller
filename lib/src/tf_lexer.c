@@ -121,16 +121,18 @@ void tf_lexer_init(TFLexer *self, const TFLanguage *lang, const void *source, ui
   tf_lexer__get_lookahead(self);
 }
 
-// lexer.c:/ts_lexer_start/. Recomputes the lookahead unconditionally rather than
-// tracking whether it went stale; it is one decode per token.
+// lexer.c:/ts_lexer_start/. tree-sitter decodes only when its lookahead was
+// invalidated by moving between input chunks or included ranges. Neither exists
+// here: only `tf_lexer__goto` and `tf_lexer__do_advance` move the position, and
+// both refresh the lookahead. Avoids one decode per token on the main path and
+// another on every keyword re-lex.
 static void tf_lexer__start(TFLexer *self) {
   self->token_start_byte = self->byte;
   self->token_start_point = self->point;
   self->token_end_byte = TF_NO_END;
   self->data.result_symbol = 0;
-  if (self->byte < self->size) {
-    tf_lexer__get_lookahead(self);
-    if (self->byte == 0 && self->data.lookahead == TF_BOM) tf_lexer__advance(&self->data, true);
+  if (self->byte == 0 && self->size > 0 && self->data.lookahead == TF_BOM) {
+    tf_lexer__advance(&self->data, true);
   }
 }
 

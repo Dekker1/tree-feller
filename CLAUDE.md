@@ -60,6 +60,22 @@ decoder is too large for the compiler to inline there, so every input byte was
 paying a call — 6.9% of a null-sink profile, in a frame of its own. Worth 14%
 (datazinc) to 28% (c), and why lexing is 52% rather than 60%.
 
+`tf_lexer__start` does not re-decode either. tree-sitter decodes there because
+a move between chunks or included ranges can have invalidated the lookahead;
+with one buffer only `tf_lexer__goto` and `tf_lexer__do_advance` move the
+position and both refresh it. Worth ~1.5% across the benchmarks, being one
+decode per token and another on every keyword re-lex.
+
+The largest lexing cost left is not in `lib/src/` at all: for identifier-heavy
+grammars, `set_contains` in `tree_sitter/parser.h` is ~15% of samples, binary
+searching 678-802 ranges of which only 3-6 are ASCII. Scanning the leading
+ranges for a `< 0x80` lookahead measures +15% (c) and +21% (minizinc) on a
+visible-node parse, and is equivalent given the sortedness the binary search
+already assumes (3.08M random-set comparisons, no mismatch). It is not shipped:
+that header is vendored verbatim, every grammar crate bundles its own copy which
+wins the include guard, so it reaches only consumers compiling `parser.c` against
+ours -- and `cargo bench` cannot see it. Upstream is the right home for it.
+
 Measured on the lexer and not worth doing, recorded so they do not get
 re-derived: **LTO, or `parser.c` in the same TU as the lexer** — zero, both ways,
 because clang will not devirtualize the `TSLexer` vtable without a profile;
@@ -71,6 +87,15 @@ public, and useless to grammar crates that compile their own `parser.c`. What
 does move it is **PGO**: +3% to +13% over the shipped build, because clang then
 promotes the per-byte indirect calls. That is a consumer's build flag, and it
 subsumes the ASCII path.
+
+Also measured and reverted, all inside noise or worse: memoizing the keyword
+re-lex on the token's bytes (the keyword DFA fails after ~2.6 bytes, so there is
+nothing to memo -- 66% hit rate and 16% *slower*); dropping the
+`if (self->lookahead_size)` guard in `tf_lexer__do_advance`, which is logically
+dead here but cost 3-5% on solidity; keeping `TSLexerMode`/`reserved_word_set_id`
+across the generated call; a branchless row/column update; and skipping the
+trailing `tf_lexer__goto` when the position is already right, which it is for
+79-100% of tokens and still measured neutral.
 
 ## Conflicts
 
