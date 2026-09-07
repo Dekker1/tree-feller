@@ -20,6 +20,15 @@ static void tf_lexer__get_lookahead(TFLexer *self) {
     self->data.lookahead = '\0';
     return;
   }
+  // ASCII, which is nearly every byte, without the call: the decoder is too
+  // large for the compiler to inline here, and it was showing up as its own
+  // frame in a profile of this loop.
+  uint8_t lead = self->source[self->byte];
+  if (lead < 0x80) {
+    self->lookahead_size = 1;
+    self->data.lookahead = lead;
+    return;
+  }
   uint32_t i = 1;
   self->data.lookahead = tf_utf8_next(self->source + self->byte, self->size - self->byte, &i);
   // A malformed sequence advances one byte, as tree-sitter does (lexer.c:130).

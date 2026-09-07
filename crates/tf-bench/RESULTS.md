@@ -64,6 +64,9 @@ feller-named    12     311.9     6.21    50.2       63M       1.2x
 
 `RSS/input` is the worst per-file ratio of peak RSS to input size.
 
+Both tables predate the lexer's ASCII path (see "Why it stops there"), so every
+`feller-*` row is conservative now -- by around 10% on this corpus.
+
 ## Largest single file, 61.7 MB
 
 | mode | time | throughput | peak RSS |
@@ -204,20 +207,61 @@ Floor 66.3 -> 74.6 MB/s, `feller-fold` 41.9 -> 46.9, and `feller-named` at 50.2.
 
 ## Why it stops there
 
-The floor is now **59% lexing**, and that is close to irreducible without giving
-up the premise of the project. `ts_lex` is generated *code*, not a table, and its
-interface costs two indirect calls per input byte: `lexer->advance()` once per
-byte, and `lexer->eof()` re-evaluated at every state transition, because
-`START_LEXER` re-enters the switch through `next_state:`. Neither call can be
-inlined, so the lexer's position has to be reloaded from memory across each one.
-Flex, which is what Bison is paired with here, walks a raw pointer held in a
-register.
+The floor was **59% lexing**, and the reading was that this is irreducible
+without giving up the premise of the project. `ts_lex` is generated *code*, not a
+table, and its interface costs two indirect calls per input byte:
+`lexer->advance()` once per byte, and `lexer->eof()` re-evaluated at every state
+transition, because `START_LEXER` re-enters the switch through `next_state:`.
+Neither call can be inlined, so the lexer's position has to be reloaded from
+memory across each one. Flex, which is what Bison is paired with here, walks a
+raw pointer held in a register.
 
-So the remaining gap is not the driver -- table lookup is down to a few percent
-and the filter is now thin -- it is that tree-sitter's lexer interface is
-per-byte virtual. Fixing it means not using `ts_lex`, which means re-deriving the
-tokenizer rather than reusing the generated artifact. That is a different project
-and it should be a deliberate decision, not something snuck in for a benchmark.
+All of that is true and none of it was the largest part. A sampling profile of
+the null-sink parse (datazinc, 4302 samples) put 60% in the lexer -- of which
+**6.9% of the whole parse was `tf_utf8_next` in a frame of its own**. `static
+inline` or not, the decoder is too large for the compiler to inline into
+`tf_lexer__get_lookahead`, so every input byte paid a call to decode a byte that
+was almost always ASCII. Handling `< 0x80` before the call, measured
+back-to-back on 8 MB generated inputs with no sink:
+
+| | datazinc | c | minizinc |
+|---|---:|---:|---:|
+| before | 103.6 MB/s | 26.9 MB/s | 42.1 MB/s |
+| ASCII handled inline | **118.4** | **34.5** | **47.6** |
+
+and +4.5% to +11.4% on the `reference` benchmarks, which do more per node.
+Lexing is now 52% of samples. Nothing about the token stream changes: `ctest`,
+and `tf_diff` over 19,236 files -- mzn-challenge and minizinc-benchmarks for
+DataZinc and MiniZinc, tree-sitter's own sources for C -- report no differences
+against libtree-sitter.
+
+What the per-byte virtual interface is worth, measured on top of that:
+
+| | datazinc | c | minizinc |
+|---|---:|---:|---:|
+| LTO, or `parser.c` in the same TU as the lexer | 0% | -- | -- |
+| direct `advance`/`mark_end` via macros in our `parser.h` | +3.5% | +1% | -1% |
+| ...and direct `eof` | +4.6% | +1% | +7% |
+| deleting row/column tracking (wrong, but a ceiling) | +4% | -3% | +2% |
+| **PGO** | **+13%** | **+3%** | **+11%** |
+
+Clang does not devirtualize the vtable on its own -- LTO and a unity build both
+measured zero -- but given a profile it does, along with laying `ts_lex`'s switch
+out to it. PGO is a consumer's build flag rather than anything this repository
+can apply, and it subsumes the ASCII path, which is what makes that path worth
+having for everyone who does not use PGO. The direct-call macros would work
+because tree-feller ships the `tree_sitter/parser.h` a consumer's `parser.c`
+compiles against, and `-include` puts it ahead of the grammar's own copy -- but
+they cost `TFLexer`'s layout becoming public and do nothing for grammar crates,
+which compile their own `parser.c`.
+
+So the interface cost is real, and it is worth about 5% of the parse rather than
+being the wall. What is left is `ts_lex` itself, ~22% of samples, which is the
+generated DFA. Not paying that means not using it -- and it cannot be recovered
+by probing, because the lex states are locals inside generated code and only
+"accepted symbol, bytes consumed" is observable from outside. It means generating
+a tokenizer from `grammar.js`. That is a different project and it should be a
+deliberate decision, not something snuck in for a benchmark.
 
 ## Where it stands
 
@@ -242,9 +286,23 @@ loader costs.
 
 The AST-to-AST number is the one that decides this, and it is not measured here.
 It needs a `.dzn` loader driven from reduce events, which lives in the gitignored
-`integration/` harness and needs a libminizinc build; measured there, tree-feller
-is 1.24x slower than Bison building the same AST. Until that is reproducible from
-this repository, what these numbers support is the claim about `parser_ts.cpp`,
-plus the memory result -- 1.2x the input against Bison's 16.8x -- which holds
-regardless of what is built on top, because it is a property of not retaining a
-tree.
+`integration/` harness and needs a libminizinc build. Measured there on a 29.35 MB
+`.dzn` (`proteindesign12/1HZ5.12p.19aa.usingEref_self.dzn`, best of three, same
+session), building the same AST and checked against Bison's with the harness's
+`diff` mode:
+
+| | time | throughput | against Bison |
+|---|---:|---:|---:|
+| bison | 0.500 s | 58.7 MB/s | 1.00 |
+| feller, before the ASCII path | 0.665 s | 44.1 MB/s | 1.33x slower |
+| **feller** | 0.587 s | 50.0 MB/s | **1.17x slower** |
+| feller, built with PGO | 0.457 s | 64.2 MB/s | 0.91x -- 9% faster |
+
+The PGO row is **not a fair comparison**: `libmzn.a` is a stock Release build, so
+Bison and flex got no profile. It says what a consumer can do to their own build,
+not which parser is faster.
+
+Until this is reproducible from this repository, what these numbers support is
+the claim about `parser_ts.cpp`, plus the memory result -- 1.2x the input against
+Bison's 16.8x -- which holds regardless of what is built on top, because it is a
+property of not retaining a tree.
