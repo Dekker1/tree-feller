@@ -22,8 +22,7 @@ let nodes: usize = language.parse(
 ```
 
 The grammar must be ABI 15 and must not use an external scanner; both are checked when
-it is loaded. See the top-level README for the limits — in particular, this
-crate does not yet expose the `on_hidden` and `named_only` options, so the node
-view costs memory proportional to the widest sibling list rather than to nesting depth.
+it is loaded. `Options` and `Visit::hidden` control what is reported and whether long runs are
+folded as they complete; see the top-level README for the limits.
 
 Licensed under the MIT licence.

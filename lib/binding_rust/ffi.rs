@@ -65,6 +65,7 @@ pub struct TFVisibleNode {
 pub struct TFVisibleSink {
     pub payload: *mut c_void,
     pub on_node: Option<unsafe extern "C" fn(*mut c_void, *const TFVisibleNode) -> *mut c_void>,
+    pub on_discard: Option<unsafe extern "C" fn(*mut c_void, *mut c_void)>,
     pub on_hidden: Option<unsafe extern "C" fn(*mut c_void, *const TFVisibleNode) -> *mut c_void>,
     pub named_only: bool,
 }
@@ -81,7 +82,7 @@ extern "C" {
     pub fn tf_parse_visible(
         language: *const TFLanguage,
         source: *const c_void,
-        size: u32,
+        size: usize,
         sink: *const TFVisibleSink,
         root: *mut *mut c_void,
         error: *mut TFError,

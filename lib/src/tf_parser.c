@@ -908,12 +908,17 @@ cleanup:
   return ok;
 }
 
-bool tf_parse(const TFLanguage *lang, const void *source, uint32_t size, const TFSink *sink,
+bool tf_parse(const TFLanguage *lang, const void *source, size_t size, const TFSink *sink,
               void **root, TFError *error) {
   static const TFSink no_sink = {0};
   TFParser self = {.lang = lang, .sink = sink ? sink : &no_sink, .error = error};
   if (error) *error = (TFError){0};
-  tf_lexer_init(&self.lexer, lang, source, size);
+  if (root) *root = NULL;
+  if (size > UINT32_MAX) {
+    tf_parser__fail(&self, 0, (TFPoint){0, 0}, "input is larger than 4 GiB");
+    return false;
+  }
+  tf_lexer_init(&self.lexer, lang, source, (uint32_t)size);
   bool ok = false;
 
   if (!tf_parser__grow(&self, 64)) {
@@ -1028,6 +1033,20 @@ bool tf_parse(const TFLanguage *lang, const void *source, uint32_t size, const T
   }
 
 done:
+  // A failed parse has no root to hand the consumer, so anything it built is
+  // otherwise dropped on the floor. Give it back before the stack goes away.
+  if (!ok && self.sink->on_discard) {
+    for (uint32_t i = 0; i < self.depth; i++) {
+      if (self.nodes[i].value) self.sink->on_discard(self.sink->payload, self.nodes[i].value);
+    }
+    if (self.root.pending) {
+      for (uint32_t i = 0; i < self.root.node_count; i++) {
+        if (self.root.children[i].value) {
+          self.sink->on_discard(self.sink->payload, self.root.children[i].value);
+        }
+      }
+    }
+  }
   free(self.states);
   free(self.nodes);
   free(self.trailing);

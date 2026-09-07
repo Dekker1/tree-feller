@@ -91,6 +91,10 @@ typedef struct {
   void *payload;
   void *(*on_shift)(void *payload, const TFToken *token, bool extra);
   void *(*on_reduce)(void *payload, const TFReduction *reduction);
+
+  // Optional. Called once for every value the sink returned that no parent ever
+  // consumed, when a parse fails partway through.
+  void (*on_discard)(void *payload, void *value);
 } TFSink;
 
 #define TF_ERROR_MESSAGE_SIZE 512
@@ -104,7 +108,7 @@ typedef struct {
 // Parse `source` in full. On success returns true and stores the value the sink
 // returned for the root in `*root`. On the first error returns false and fills
 // `*error`; parsing does not continue past it. `root` and `error` may be NULL.
-bool tf_parse(const TFLanguage *lang, const void *source, uint32_t size, const TFSink *sink,
+bool tf_parse(const TFLanguage *lang, const void *source, size_t size, const TFSink *sink,
               void **root, TFError *error);
 
 // ---------------------------------------------------------------------------
@@ -164,6 +168,9 @@ typedef struct {
   void *payload;
   void *(*on_node)(void *payload, const TFVisibleNode *node);
 
+  // As `TFSink::on_discard`: every value no parent consumed, after a failure.
+  void (*on_discard)(void *payload, void *value);
+
   // Optional. A hidden rule -- an inlined rule, or the `aux_sym_*_repeat1`
   // behind a repetition -- has completed with more than one visible child.
   //
@@ -205,7 +212,7 @@ typedef struct {
 
 // As `tf_parse`, reporting visible nodes instead of raw reductions. Children are
 // still reported before their parents.
-bool tf_parse_visible(const TFLanguage *lang, const void *source, uint32_t size,
+bool tf_parse_visible(const TFLanguage *lang, const void *source, size_t size,
                       const TFVisibleSink *sink, void **root, TFError *error);
 
 #ifdef __cplusplus

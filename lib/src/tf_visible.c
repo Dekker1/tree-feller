@@ -233,7 +233,7 @@ static void *tf_filter__on_reduce(void *payload, const TFReduction *reduction) {
   return TF_PACK(self->arena_len - base, production_id);
 }
 
-bool tf_parse_visible(const TFLanguage *lang, const void *source, uint32_t size,
+bool tf_parse_visible(const TFLanguage *lang, const void *source, size_t size,
                       const TFVisibleSink *sink, void **root, TFError *error) {
   static const TFVisibleSink no_sink = {0};
   TFFilter self = {.lang = lang, .sink = sink ? sink : &no_sink};
@@ -272,6 +272,13 @@ bool tf_parse_visible(const TFLanguage *lang, const void *source, uint32_t size,
     *root = NULL;
   }
 
+  // Same as the driver: on failure the consumer never sees a root, so hand back
+  // everything still sitting in the arena.
+  if (!ok && self.sink->on_discard) {
+    for (uint32_t i = 0; i < self.arena_len; i++) {
+      if (self.arena[i].value) self.sink->on_discard(self.sink->payload, self.arena[i].value);
+    }
+  }
   free(self.arena);
   free(self.scratch);
   free(self.declined);

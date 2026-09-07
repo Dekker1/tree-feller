@@ -5,6 +5,7 @@
 // Behaviour is covered in Rust (`lib/tests/`); what is checked here is that
 // every entry point is reachable, composes, and does something recognisable.
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "tree_feller.h"
@@ -23,6 +24,7 @@ static unsigned failures;
   } while (0)
 
 static unsigned raw_shifts, raw_reduces, visible_nodes, folded_runs;
+static unsigned handed_out, handed_back;
 
 static void *on_shift(void *payload, const TFToken *token, bool extra) {
   (void)payload;
@@ -48,6 +50,26 @@ static void *on_node(void *payload, const TFVisibleNode *node) {
   }
   visible_nodes++;
   return (void *)total;
+}
+
+// An allocating consumer, to check that a failed parse hands everything back
+// rather than dropping it.
+static void *on_node_alloc(void *payload, const TFVisibleNode *node) {
+  (void)payload;
+  for (uint32_t i = 0; i < node->child_count; i++) {
+    if (node->children[i].value) {
+      free(node->children[i].value);
+      handed_back++;
+    }
+  }
+  handed_out++;
+  return malloc(1);
+}
+
+static void on_discard(void *payload, void *value) {
+  (void)payload;
+  free(value);
+  handed_back++;
 }
 
 static void *on_hidden(void *payload, const TFVisibleNode *node) {
@@ -96,6 +118,18 @@ int main(void) {
         error.message);
   CHECK(folded_runs > 0, "nothing was offered to fold");
   CHECK(visible_nodes < all_nodes, "named_only reported as many nodes as a full walk");
+
+  // Nothing built before a failure is dropped on the floor.
+  handed_out = handed_back = 0;
+  TFVisibleSink allocating = {.on_node = on_node_alloc, .on_discard = on_discard};
+  CHECK(!tf_parse_visible(lang, "int a = 1; int int b;", 21, &allocating, NULL, &error),
+        "malformed input was accepted");
+  CHECK(handed_out > 0, "nothing was built before the failure");
+  CHECK(handed_out == handed_back, "%u values built, %u handed back", handed_out, handed_back);
+
+  // A length that does not fit a byte offset is refused, not truncated.
+  CHECK(!tf_parse(lang, source, (size_t)1 << 32, NULL, NULL, &error), "4 GiB input was accepted");
+  CHECK(strstr(error.message, "4 GiB") != NULL, "unhelpful message: %s", error.message);
 
   // A sink is optional; parsing with none is how you measure the driver alone.
   CHECK(tf_parse(lang, source, size, NULL, NULL, &error), "sinkless parse failed");

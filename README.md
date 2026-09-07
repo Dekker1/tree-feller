@@ -127,35 +127,33 @@ let nodes: usize = language.parse(
 
 The visitor returns a value per node, which arrives in its parent's `children`. There is
 no tree to walk afterwards and nothing to free. `parse_file` maps a file instead of
-taking a slice. The crate does not expose `on_hidden` or `named_only` yet.
+taking a slice. `Options` and `Visit::hidden` give you the two knobs described below.
 
 ## Two ways to read a parse
 
 `tf_parse` gives the **raw reduction stream**: every reduction the grammar performs, in
-post-order, children before parents. It is the leanest form and what a purpose-built
+post-order, children before parents. It is the leanest form, and what a purpose-built
 consumer wants — you switch on the grammar's own symbols.
 
-`tf_parse_visible` applies tree-sitter's visibility, alias and field rules on top, so
-you see the node sequence a CST walk would give you: supertypes and `aux_sym_*_repeat1`
-nodes gone, aliases applied, fields resolved. Use it when you are replacing a
+`tf_parse_visible` applies tree-sitter's visibility, alias and field rules on top, so you
+see the node sequence a CST walk would give you. Use it when you are replacing a
 `TSTreeCursor` walk.
 
 Both hand you a `void *` per node, which becomes that node's entry in its parent's child
-list. There is no tree; the value you build *is* the result.
+list. There is no tree; the value you build *is* the result. You own a child's value the
+moment you are handed it. If the parse fails there is no root to hand back, so set
+`on_discard` and the sink is given every value no parent consumed.
 
-The visible sink has two options, both off by default. Leave them alone and you get
-exactly what a CST walk gives:
+Two options on the visible sink, both off by default:
 
-- **`on_hidden`** — a hidden rule's children cannot be handed to anyone until the
-  nearest *visible* ancestor reduces, because only then is it known what they are
-  children of. For the `aux_sym_*_repeat1` behind a long list that ancestor is the whole
-  list, so one array of a few million values keeps every member live at once. Set
-  `on_hidden` to fold each run as it completes and memory stays proportional to nesting
-  depth instead: 1042 MB → 63 MB on one 61.7 MB file.
+- **`on_hidden`** — a hidden rule's children cannot be attributed until the nearest
+  *visible* ancestor reduces, which for a long list is the whole list. Fold each run as
+  it completes and memory stays proportional to nesting depth: 1042 MB → 63 MB on one
+  61.7 MB file. In Rust this is `Visit::hidden`.
 
-- **`named_only`** — an anonymous *leaf* that fills no field is not reported. These are
-  the punctuation tokens, about half the nodes in a list-heavy file. Anonymous tokens
-  that do fill a field, such as an `operator`, are still reported.
+- **`named_only`** — an anonymous *leaf* that fills no field is not reported: the
+  punctuation, about half the nodes in a list-heavy file. Anonymous tokens that do fill a
+  field, such as an `operator`, still are.
 
 ## Errors
 
@@ -166,79 +164,56 @@ with the regex grammar:
 1:3: expected one of {)}, found end of file
 ```
 
-One error, then the parse stops. There is no recovery and no `ERROR` node: for a program
-reading a file, a precise hard failure is more useful than a guess.
+One error, then the parse stops — no recovery, no `ERROR` node. Line and column match
+tree-sitter exactly, which means **only `\n` advances the row** and **`column` counts
+bytes, not code points**.
 
-Line and column match tree-sitter exactly, which means **only `\n` advances the row** and
-**`column` counts bytes, not code points**. Convert if your consumer needs code point
-columns.
-
-Where a grammar has a declared conflict, the tables cannot decide with one token of
-lookahead, so the driver forks branches that carry no values and runs them until one
-survives — the sink still sees exactly one, correct, sequence of events. The winner is
-chosen by tree-sitter's own rule (`ts_parser__select_tree`). Splits are bounded; needing
-more than 4096 live branches is reported as an error, never as a wrong parse. The
-details are in `src/tf_parser.c`.
+Where a grammar has a declared conflict, the driver forks branches that carry no values
+and runs them until one survives; the sink still sees exactly one correct sequence of
+events, and the winner is chosen by tree-sitter's own rule. Splits are bounded — needing
+more than 4096 live branches is an error, never a wrong parse.
 
 ## Limits
 
 - **Not incremental.** No reparsing, no tree, no `TSNode` API, no queries. One pass.
-- **No external scanners.** A grammar with a `scanner.c` is rejected at load. This rules
-  out a good number of published grammars — Python, Ruby, Rust, Bash and others.
-- **ABI 15 only.** Not 14, not 16. See below.
-- **No non-terminal extras.** A grammar with a `0xFFFF` lex state is rejected at load.
-- **4 GiB limit.** Byte offsets are `uint32_t`, as tree-sitter's are.
-- **In-memory only.** `tf_parse` takes a contiguous buffer; `tf_file_open` maps a file.
-  A streaming pull source is designed for but not implemented (see `src/tf_lexer.h`);
-  adding it later is a new entry point rather than a rewrite.
-- **64-bit only.** The visible filter packs a per-node cell into a pointer and asserts
-  `sizeof(void *) >= 8` at compile time.
-- **The visible layer is O(widest sibling list)** unless you set `on_hidden`, which the
-  Rust crate does not expose yet.
-- **Not faster than a good hand-written parser.** Against a Bison parser for the same
-  language, both building the same AST, tree-feller came out 1.24× slower. The gap is
-  the lexer, not the driver: `ts_lex` is generated *code* whose interface costs two
-  indirect calls per input byte, while flex walks a raw pointer held in a register.
-  Closing it would mean not using `ts_lex` — a different project. Memory goes the other
-  way: 1.2× the input against Bison's 16.8×.
+- **No external scanners.** A grammar with a `scanner.c` is rejected at load — which
+  rules out Python, Ruby, Rust, Bash and many others.
+- **ABI 15 only**, and no non-terminal extras. Both are rejected at load.
+- **4 GiB limit**, because byte offsets are `uint32_t`, as tree-sitter's are. A longer
+  input is refused, not truncated.
+- **In-memory only.** A streaming pull source is designed for but not built; see
+  `lib/src/tf_lexer.h`.
+- **64-bit only**, asserted at compile time.
+- **The visible layer is O(widest sibling list)** unless you set `on_hidden`.
+- **Not faster than a good hand-written parser.** Against Bison for the same language,
+  both building the same AST, 1.17× slower on a 29 MB data file. What is left is the
+  lexer: `ts_lex` is generated *code* whose interface costs two indirect calls per input
+  byte, where flex walks a pointer in a register. Building with PGO closes it. Memory
+  goes the other way — 1.2× the input against Bison's 16.8×.
 - **`tf_language_load` is not thread-safe**; a loaded `TFLanguage` is read-only and safe
   to share.
 
 ## Which tree-sitter
 
-**ABI 15**, as generated by tree-sitter CLI **0.26.x**. `tf_language_load` rejects
-anything else rather than reading a struct laid out differently — `TSLanguage` gained and
-reordered fields across ABI versions, and reading the wrong one silently yields nonsense.
+**ABI 15**, from tree-sitter CLI **0.26.x**. `TSLanguage` gained and reordered fields
+across ABI versions, so reading the wrong one yields nonsense rather than an error —
+`tf_language_load` refuses anything else. `tests/test_tables.c` walks every state × every
+symbol of all seven test grammars against libtree-sitter's own accessors, which is what
+would catch a bad port.
 
-This is the one coupling that matters, so it is checked three ways: the load-time
-`abi_version` check; `lib/include/tree_feller/tree_sitter/parser.h`, which is the ABI-15
-header vendored verbatim, so the struct layout compiled against is fixed and visible; and
-`tests/test_tables.c`, which walks **every state × every symbol** of all seven test
-grammars and asserts agreement with libtree-sitter's own `ts_language_*` accessors.
+`lib/include/tree_feller/tree_sitter/parser.h` is the ABI-15 header, vendored verbatim.
+It is the only third-party file here and cannot be removed: it *is* the ABI. Your grammar
+ships the same header and both share the `TREE_SITTER_PARSER_H_` guard, so whichever is
+included first wins.
 
-That vendored header is the only third-party file here, and it cannot reasonably be
-removed: it *is* the ABI. It is also why coexistence works — your grammar ships the same
-header, both copies share the `TREE_SITTER_PARSER_H_` guard, so whichever is included
-first wins.
-
-To move to a new ABI: regenerate the grammars with the matching CLI, update `parser.h`,
-bump `TF_ABI_VERSION` in `lib/include/tree_feller.h`, update the pinned libtree-sitter in
-`CMakeLists.txt`, and run `ctest`. The table test is what tells you whether the port is
-right.
+To move ABI: regenerate the grammars, update `parser.h`, bump `TF_ABI_VERSION`, update the
+pinned libtree-sitter in `CMakeLists.txt`, run `ctest`.
 
 ## Testing
 
-`ctest` runs, in order of how much they would catch:
-
-| test | what it covers |
-|---|---|
-| `tables` | every state × every symbol of seven grammars against libtree-sitter's accessors |
-| `lexer` | token stream — symbol and byte span — against the leaves of a real tree |
-| `utf8` | 285 million byte sequences against ICU's decoder |
-| `corpus_*` | `tests/corpus/<grammar>/`, node for node against a real tree |
-| `sources_c` | tree-sitter's own runtime sources, as real-world C |
-| `fold` | folding a hidden run reports the same visible nodes as not folding |
-| `errors` | malformed input fails, with a position |
+`ctest` covers the table accessors against libtree-sitter, the token stream against a real
+tree's leaves, UTF-8 against ICU over 285 million sequences, per-grammar corpora node for
+node, folding equivalence, and error positions. `cargo test` covers the Rust surface.
 
 `tools/tf_diff` is the acceptance harness and runs over any directory, comparing the node
 stream against a post-order walk of the tree libtree-sitter builds — same symbols, byte
@@ -246,27 +221,15 @@ spans, field ids and production ids:
 
 ```sh
 build/tf_diff --grammar c /path/to/some/c/project
-build/tf_diff --grammar go /path/to/some/go/project
 ```
 
-Files the grammar itself rejects are counted separately; that is not a result about
-tree-feller. The largest run so far is 18,910 files in one invocation, with no mismatches.
+Files the grammar itself rejects are counted separately. The largest run so far is 18,910
+files in one invocation with no mismatches; ten grammars have been checked this way.
 
-No generated parser lives in this repository. `cmake/TreeFellerGrammars.cmake` fetches
-seven at configure time, each pinned by version and checked by SHA-256, chosen for the
-shapes they exercise rather than for being popular languages — `c` for the dense
-`parse_table` path and 39 fields, `go` for the packed table and reserved words, `regex`
-for `FIELD_COUNT 0`, `solidity` for contextual keywords, `minizinc` for the most
-conflicts, `datazinc` for the smallest case where the speculative split runs at all, and
-`eprime` as a control. They are cached in the build directory, so only the first
-configure needs the network.
-
-CI (`.github/workflows/ci.yml`) builds and tests on Linux, macOS and Windows, runs
-`cargo test`, lints with `clang-format`/`clang-tidy`/`clippy`, repeats the suite under
-AddressSanitizer and UndefinedBehaviorSanitizer, and checks the packaged crate. Windows
-builds and tests the library but not `tf_diff` or `tf_bench`, which walk directories with
-`dirent.h` and read peak RSS with `getrusage`; the library itself is portable, and
-`tf_file.c` has a Windows mapping path.
+No generated parser lives in this repository — `cmake/TreeFellerGrammars.cmake` fetches
+seven at configure time, hash-pinned, chosen for the shapes they exercise rather than for
+being popular. CI builds and tests on Linux, macOS and Windows, lints, repeats the suite
+under ASan and UBSan, and checks the packaged crate.
 
 ## Benchmarks
 
@@ -274,20 +237,15 @@ builds and tests the library but not `tf_diff` or `tf_bench`, which walk directo
 cargo bench -p tf-bench
 ```
 
-Deterministic generated inputs — a few megabytes of `.dzn` and JSON, and repeated
-source for MiniZinc, C, Go and Solidity — parsed in the two configurations a consumer
-would actually pick: the full CST-equivalent view, and named nodes with hidden runs
-folded. They run under [CodSpeed](https://codspeed.io) in CI, so a throughput
-regression shows up on the pull request.
+Generated inputs — `.dzn`, JSON, MiniZinc, C, Go, Solidity — parsed both as a full CST
+walk and as named nodes with runs folded. They run under [CodSpeed](https://codspeed.io)
+in CI, so a regression shows up on the pull request.
+[`crates/tf-bench/RESULTS.md`](crates/tf-bench/RESULTS.md) has the method and the numbers.
 
-Grammars come from crates: C, Go and Solidity from crates.io, DataZinc and MiniZinc as
-git dependencies on the shackle repository. JSON is the exception — it is published at
-ABI 14, which this library does not load, so `tf-bench` regenerates it at ABI 15 with
-the pinned CLI. That needs `npx`; without it the JSON benchmarks are skipped rather than
-failing the build. TOML, YAML and XML cannot be used at all — they have external
-scanners, so no amount of regenerating helps.
+JSON is regenerated at ABI 15 by `tf-bench` because it ships at ABI 14; that needs `npx`,
+and without it those benchmarks are skipped. TOML, YAML and XML have external scanners, so
+no amount of regenerating helps.
 
 ## Licence
 
-MIT. The only third-party file is `lib/include/tree_feller/tree_sitter/parser.h`, which is
-tree-sitter's own header, also MIT.
+MIT. `lib/include/tree_feller/tree_sitter/parser.h` is tree-sitter's, also MIT.

@@ -487,11 +487,6 @@ impl Language {
         options: Options,
         visitor: T,
     ) -> Result<V, ParseError> {
-        assert!(
-            source.len() <= u32::MAX as usize,
-            "source is larger than 4 GiB"
-        );
-
         let mut state = State::<V, T> {
             visit: visitor,
             values: Slab::new(),
@@ -502,6 +497,9 @@ impl Language {
         let sink = ffi::TFVisibleSink {
             payload: &mut state as *mut _ as *mut c_void,
             on_node: Some(on_node::<V, T>),
+            // Rust owns the values in the slab and drops them with it, so there
+            // is nothing for the C side to hand back.
+            on_discard: None,
             on_hidden: Some(on_hidden::<V, T>),
             named_only: options.named_only,
         };
@@ -512,7 +510,7 @@ impl Language {
             ffi::tf_parse_visible(
                 self.raw,
                 source.as_ptr() as *const c_void,
-                source.len() as u32,
+                source.len(),
                 &sink,
                 &mut root,
                 &mut error,
