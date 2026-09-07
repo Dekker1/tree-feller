@@ -1,14 +1,10 @@
 //! Streaming LR parsing over tree-sitter parse tables.
 //!
-//! A grammar's generated `parser.c` is read as a table artifact and driven by a
-//! deterministic, non-incremental parser that reports nodes as it completes
-//! them. No tree is built, and nothing is retained beyond the current nesting
-//! depth -- so a data file of any size costs about as much as its deepest
-//! nesting, not as much as its contents.
+//! Drives a grammar's generated lexer and parse tables once, reporting nodes as
+//! they finish. It builds no tree and retains only live parser state.
 //!
-//! A grammar is whatever its published crate exports as `LANGUAGE` -- the same
-//! [`tree_sitter_language::LanguageFn`] you would hand to `tree_sitter::Parser`.
-//! Add the grammar crate, and that is the whole binding:
+//! Pass the [`tree_sitter_language::LanguageFn`] a grammar crate exports as
+//! `LANGUAGE`:
 //!
 //! ```
 //! # use tree_feller::{Child, Language, Node};
@@ -22,11 +18,8 @@
 //! # }
 //! ```
 //!
-//! A file whose top level is one very long list keeps every member live at once,
-//! because a hidden repetition's children cannot be attributed until the visible
-//! node above them closes. Implement [`Visit::hidden`] to fold each run as it
-//! completes and memory stays proportional to nesting depth; pass
-//! [`Options::named_only`] to drop the punctuation a consumer does not read.
+//! Implement [`Visit::hidden`] to fold long repetitions as they finish. Use
+//! [`Options::named_only`] to omit unfielded punctuation.
 //!
 //! ```
 //! # use tree_feller::{Child, Language, Node, Options, Visit};
@@ -48,16 +41,14 @@
 //! # }
 //! ```
 //!
-//! The grammar must be ABI 15 and must not use an external scanner; both are
-//! checked when it is loaded.
+//! Grammars must use ABI 15 and no external scanner; loading checks both.
 
 use std::ffi::{c_void, CStr, CString};
 use std::fmt;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::Path;
 
-/// A grammar's entry point, as its generated `tree_sitter_<name>()` crate
-/// exports it under `LANGUAGE`.
+/// A grammar crate's `LANGUAGE` entry point.
 pub use tree_sitter_language::LanguageFn;
 
 mod ffi;
@@ -134,7 +125,7 @@ impl Node<'_> {
     }
 }
 
-/// One child of a node, with whatever the visitor returned for it.
+/// A child and its visitor-produced value.
 #[derive(Clone, Copy, Debug)]
 pub struct Child<V> {
     /// The child's symbol id, with any alias its parent applied.
@@ -149,32 +140,22 @@ pub struct Child<V> {
 
 /// Called once per node, children before parents.
 ///
-/// A closure is enough for the common case and implements this automatically.
-/// Implement it directly when you want to fold hidden runs -- see [`Visit::hidden`].
+/// Closures implement this trait. Implement it directly to fold hidden runs.
 ///
-/// `children` is a buffer the parser reuses, so take what you need out of it --
-/// by `drain`, or otherwise. Anything left behind is dropped.
+/// The parser reuses `children`; drain what you need. Remaining values are dropped.
 pub trait Visit<V> {
     /// A node has been completed, after all of its children.
     fn node(&mut self, node: Node<'_>, children: &mut Vec<Child<V>>) -> V;
 
     /// A hidden rule has completed with more than one visible child.
     ///
-    /// Those children cannot be handed to anyone until the nearest *visible*
-    /// ancestor reduces, because only then is it known what they are children
-    /// of. For the repetition behind a long list that ancestor is the whole
-    /// list, so a file with one array of a few million values keeps every member
-    /// live at once. Returning `Some` folds the run into a single value as it
-    /// completes, and memory stays proportional to nesting depth instead.
+    /// Returning `Some` folds the run into one value, keeping long lists from
+    /// retaining every member until their visible parent finishes.
     ///
-    /// The parent then sees one child where it would have seen the run, so a
-    /// visitor that folds is no longer being handed the shape a CST walk gives.
+    /// The parent sees one child instead of the run, unlike a CST walk.
     ///
-    /// Returning `None` declines, and that answer is taken for the *symbol* --
-    /// it will not be asked again. An offer hands over every child in the run,
-    /// and a repetition's run grows by one each time it reduces, so re-asking
-    /// after a refusal is quadratic across the list. The default implementation
-    /// declines everything, which reproduces a CST walk exactly.
+    /// `None` declines that symbol permanently, avoiding quadratic repeated
+    /// offers. The default declines all folds and reproduces a CST walk.
     fn hidden(&mut self, _node: Node<'_>, _children: &mut Vec<Child<V>>) -> Option<V> {
         None
     }
@@ -196,7 +177,7 @@ pub struct Options {
 }
 
 impl Options {
-    /// Builder setter for the `named_only` field.
+    /// Sets [`Options::named_only`].
     pub fn named_only(mut self, yes: bool) -> Self {
         self.named_only = yes;
         self
@@ -210,7 +191,7 @@ pub struct ParseError {
     pub byte: u32,
     /// Where `byte` falls, as a row and column.
     pub point: Point,
-    /// A human-readable description of what went wrong.
+    /// Human-readable details.
     pub message: String,
 }
 
@@ -424,12 +405,7 @@ unsafe impl Send for Language {}
 unsafe impl Sync for Language {}
 
 impl Language {
-    /// Read the tables of a grammar, given whatever its crate exports as
-    /// `LANGUAGE`.
-    ///
-    /// This is the `tree_sitter_language::LanguageFn` the Tree-sitter CLI
-    /// generates for every grammar, so any published grammar crate works
-    /// unchanged and no `extern "C"` block is needed:
+    /// Loads the tables behind a grammar crate's `LANGUAGE`.
     ///
     /// ```
     /// # use tree_feller::Language;
@@ -487,14 +463,12 @@ impl Language {
         unsafe { CStr::from_ptr(name) }.to_str().ok()
     }
 
-    /// Parse `source`, reporting each node to `visitor`, and return whatever it
-    /// returned for the root.
+    /// Reports each node to `visitor` and returns its root value.
     ///
     /// The node stream is what a tree-sitter CST walk gives. See
     /// [`Language::parse_with`] to change that.
     ///
-    /// Fails with a [`ParseError`], rather than panicking, if `source` is larger
-    /// than 4 GiB -- the limit of the `u32` byte offsets nodes report.
+    /// Returns [`ParseError`] above 4 GiB, the `u32` offset limit.
     pub fn parse<V, T: Visit<V>>(&self, source: &[u8], visitor: T) -> Result<V, ParseError> {
         self.parse_with(source, Options::default(), visitor)
     }
@@ -553,8 +527,7 @@ impl Language {
         })
     }
 
-    /// Parse a file, mapped rather than read: it costs address space, not
-    /// committed memory. Fails above 4 GiB, the limit of a byte offset.
+    /// Maps and parses a file. Fails above 4 GiB.
     pub fn parse_file<V, T: Visit<V>>(
         &self,
         path: impl AsRef<Path>,

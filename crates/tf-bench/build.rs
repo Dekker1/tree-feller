@@ -13,7 +13,7 @@ use std::process::Command;
 
 const GRAMMAR: &str =
     "https://raw.githubusercontent.com/tree-sitter/tree-sitter-json/v0.24.8/grammar.js";
-const CLI: &str = "tree-sitter-cli@0.26.12";
+const CLI: &str = "tree-sitter-cli@0.27.0";
 
 /// ABI 15 needs a `tree-sitter.json` beside the grammar, which the fetched file
 /// does not come with.

@@ -1,12 +1,7 @@
 # tree-feller
 
-Streaming LR parsing over tree-sitter parse tables, without building a tree.
-
-Rust bindings for the [tree-feller](https://github.com/dekker1/tree-feller) C library.
-Hand it whatever a grammar crate exports as `LANGUAGE` and it drives that grammar's
-parse tables directly — no `Tree`, no `Node`, no tree-sitter runtime. Nodes are
-reported as they complete, children before parents, and nothing is retained beyond the
-current nesting depth.
+Rust bindings for [tree-feller](https://github.com/dekker1/tree-feller): single-pass LR
+parsing with tree-sitter parse tables, without building a tree.
 
 ```rust
 use tree_feller::{Child, Language, Node};
@@ -15,14 +10,14 @@ let language = Language::new(tree_sitter_c::LANGUAGE)?;
 let nodes: usize = language.parse(
     b"int main(void) { return 0; }",
     |_node: Node<'_>, children: &mut Vec<Child<usize>>| {
-        children.drain(..).map(|c| c.value).sum::<usize>() + 1
+        children.drain(..).map(|child| child.value).sum::<usize>() + 1
     },
 )?;
 # Ok::<_, Box<dyn std::error::Error>>(())
 ```
 
-The grammar must be ABI 15 and must not use an external scanner; both are checked when
-it is loaded. `Options` and `Visit::hidden` control what is reported and whether long runs are
-folded as they complete; see the top-level README for the limits.
+Nodes arrive after their children and only live parser state is retained. Grammars must
+use ABI 15 and no external scanner. Use `Options` to filter nodes and `Visit::hidden` to
+fold long runs. See the repository README for details and limits.
 
-Licensed under the MIT licence.
+MIT licensed.

@@ -117,11 +117,11 @@ if(TF_BUILD_TESTS)
   include(FetchContent)
   set(BUILD_SHARED_LIBS OFF)
   # Pinned: the reference has to be the runtime whose tables and behaviour this
-  # library is written against. See README, "Which tree-sitter".
+  # library is written against. See README, "Grammar compatibility".
   FetchContent_Declare(tree-sitter
-    URL https://github.com/tree-sitter/tree-sitter/archive/refs/tags/v0.26.12.tar.gz
+    URL https://github.com/tree-sitter/tree-sitter/archive/refs/tags/v0.27.0.tar.gz
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
-    URL_HASH SHA256=428e2b182fe38eddc100d8bd851e47c96921a69281b66abafc25ba4b0aaeeeab)
+    URL_HASH SHA256=d35c96e68736bd9569d2757c3cc71052485f33082c3825f1aed9d0e86013a159)
   # Added with EXCLUDE_FROM_ALL so its install rules stay out of ours: the
   # reference runtime is a test dependency, and installing tree-feller must not
   # drop a copy of libtree-sitter next to it.

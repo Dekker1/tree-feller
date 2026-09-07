@@ -56,7 +56,7 @@ impl Grammar {
 /// The reference: every visible node, in post-order.
 fn walk(cursor: &mut TreeCursor<'_>, out: &mut Vec<Record>) {
     let node = cursor.node();
-    let child_count = node.child_count();
+    let child_count = node.child_count() as usize;
     if cursor.goto_first_child() {
         loop {
             walk(cursor, out);
