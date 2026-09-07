@@ -7,6 +7,79 @@
 
 #include "tf_lexer.h"
 
+// Scratch state retained by the ambiguity driver for the duration of a parse.
+#define TF_SHAPE_INHERITED 0x80000000u
+
+typedef struct {
+  TSSymbol symbol;
+  uint32_t child_count;
+  uint32_t first_child;
+} TFShape;
+
+typedef struct {
+  TFShape *shapes;
+  uint32_t shape_count, shape_capacity;
+  uint32_t *links;  // children, in source order, run per shape
+  uint32_t link_count, link_capacity;
+  // One shape per stack cell. High-bit values identify cells inherited from
+  // before the fork, which both branches share.
+  uint32_t *cells;
+  uint32_t cell_count, cell_capacity;
+  bool failed;
+} TFForest;
+
+typedef struct {
+  TFForest first, second;
+  uint32_t *stack;
+  uint32_t stack_capacity;
+} TFComparison;
+
+typedef struct {
+  bool is_shift;
+  union {
+    struct {
+      TFToken token;
+      bool extra;
+      TSStateId state;
+    } shift;
+    struct {
+      TSSymbol symbol;
+      uint16_t production_id;
+      uint32_t child_count;
+      // Enough to rebuild the shape of the tree from the log alone: how many
+      // cells the reduction actually took (its children, extras between them
+      // included) and how many extras were left above it.
+      uint32_t node_count;
+      uint32_t trailing;
+    } reduce;
+  };
+} TFLogEntry;
+
+typedef struct {
+  // States and extra flags only: a branch needs to know how far a pop reaches,
+  // not what anything means. states[0] is the state at the fork's base;
+  // extra[i] says whether the cell that produced states[i] was an extra.
+  TSStateId *states;
+  uint8_t *extra;
+  uint32_t depth, capacity;
+  TFLexer lexer;
+  TFToken token;  // the token this branch is working on
+  TFLogEntry *log;
+  uint32_t log_length, log_capacity;
+  // subtree.c:407 plus parser.c:/parent.ptr->dynamic_precedence/: a tree's dynamic
+  // precedence is the sum over its reductions. Branches share everything below
+  // the fork, so the sum since the fork is what distinguishes them.
+  int64_t precedence;
+  uint32_t forced;  // action index to take at the next conflict, then cleared
+  bool has_forced;
+  bool alive, accepted;
+  uint32_t error_byte;
+  TFPoint error_point;
+  TSStateId error_state;
+  TSSymbol error_symbol;
+  bool error_is_lex;
+} TFBranch;
+
 typedef struct {
   const TFLanguage *lang;
   TFLexer lexer;
@@ -43,6 +116,10 @@ typedef struct {
   } root;
 
   TFError *error;
+  bool report_splits;
+  TFComparison comparison;
+  TFBranch *branches;
+  uint32_t branch_capacity;
 } TFParser;
 
 static bool tf_parser__grow(TFParser *self, uint32_t needed) {
@@ -272,52 +349,6 @@ static bool tf_parser__reduce(TFParser *self, TSSymbol symbol, uint32_t child_co
 // into O(divergence); or build the real GSS and inherit the bound directly.
 #define TF_MAX_BRANCHES 4096
 
-typedef struct {
-  bool is_shift;
-  union {
-    struct {
-      TFToken token;
-      bool extra;
-      TSStateId state;
-    } shift;
-    struct {
-      TSSymbol symbol;
-      uint16_t production_id;
-      uint32_t child_count;
-      // Enough to rebuild the shape of the tree from the log alone: how many
-      // cells the reduction actually took (its children, extras between them
-      // included) and how many extras were left above it.
-      uint32_t node_count;
-      uint32_t trailing;
-    } reduce;
-  };
-} TFLogEntry;
-
-typedef struct {
-  // States and extra flags only: a branch needs to know how far a pop reaches,
-  // not what anything means. states[0] is the state at the fork's base;
-  // extra[i] says whether the cell that produced states[i] was an extra.
-  TSStateId *states;
-  uint8_t *extra;
-  uint32_t depth, capacity;
-  TFLexer lexer;
-  TFToken token;  // the token this branch is working on
-  TFLogEntry *log;
-  uint32_t log_length, log_capacity;
-  // subtree.c:407 plus parser.c:/parent.ptr->dynamic_precedence/: a tree's dynamic
-  // precedence is the sum over its reductions. Branches share everything below
-  // the fork, so the sum since the fork is what distinguishes them.
-  int64_t precedence;
-  uint32_t forced;  // action index to take at the next conflict, then cleared
-  bool has_forced;
-  bool alive, accepted;
-  uint32_t error_byte;
-  TFPoint error_point;
-  TSStateId error_state;
-  TSSymbol error_symbol;
-  bool error_is_lex;
-} TFBranch;
-
 static bool tf_branch__reserve(TFBranch *self, uint32_t needed) {
   // `capacity` starts at zero with nothing allocated, and a branch forked at the
   // very bottom of the stack needs zero *more* than that -- but still needs the
@@ -362,29 +393,40 @@ static void tf_branch__free(TFBranch *self) {
   free(self->log);
 }
 
-// Release a branch's memory and free its slot for reuse. Dead branches must not
-// hold slots: the branch limit is meant to bound how many possibilities are live
-// at once, not how many have been tried since the fork.
-static void tf_branch__retire(TFBranch *self) {
-  tf_branch__free(self);
-  *self = (TFBranch){0};
+// Reset a branch while retaining its working buffers for the next conflict.
+// A file may resolve thousands of small conflicts, so their high-water marks
+// belong to the parse rather than to one split.
+static void tf_branch__clear(TFBranch *self) {
+  self->log_length = 0;
+  self->precedence = 0;
+  self->has_forced = false;
+  self->alive = false;
+  self->accepted = false;
 }
 
 static bool tf_branch__clone(TFBranch *out, const TFBranch *self) {
+  TSStateId *states = out->states;
+  uint8_t *extra = out->extra;
+  uint32_t capacity = out->capacity;
+  TFLogEntry *log = out->log;
+  uint32_t log_capacity = out->log_capacity;
   *out = *self;
-  out->states = NULL;
-  out->extra = NULL;
-  out->capacity = 0;
-  out->log = NULL;
-  out->log_capacity = 0;
+  out->states = states;
+  out->extra = extra;
+  out->capacity = capacity;
+  out->log = log;
+  out->log_capacity = log_capacity;
   if (!tf_branch__reserve(out, self->depth)) return false;
   memcpy(out->states, self->states, (self->depth + 1) * sizeof(TSStateId));
   memcpy(out->extra, self->extra, (self->depth + 1) * sizeof(uint8_t));
-  if (self->log_length) {
-    out->log = malloc(self->log_length * sizeof(TFLogEntry));
-    if (!out->log) return false;
+  if (self->log_length > out->log_capacity) {
+    TFLogEntry *grown = realloc(out->log, self->log_length * sizeof(TFLogEntry));
+    if (!grown) return false;
+    out->log = grown;
     memcpy(out->log, self->log, self->log_length * sizeof(TFLogEntry));
     out->log_capacity = self->log_length;
+  } else if (self->log_length > 0) {
+    memcpy(out->log, self->log, self->log_length * sizeof(TFLogEntry));
   }
   return true;
 }
@@ -516,24 +558,6 @@ static TFStep tf_branch__step(TFBranch *self, const TFLanguage *lang, uint32_t *
 // the shape of what each branch built, which its log is enough to rebuild -- so
 // it is rebuilt here, on the rare occasions it is asked for, rather than
 // maintained on every step.
-#define TF_SHAPE_INHERITED 0x80000000u
-
-typedef struct {
-  TSSymbol symbol;
-  uint32_t child_count;
-  uint32_t first_child;
-} TFShape;
-
-typedef struct {
-  TFShape *shapes;
-  uint32_t shape_count, shape_capacity;
-  uint32_t *links;  // children, in source order, run per shape
-  uint32_t link_count, link_capacity;
-  uint32_t *cells;                     // shape per stack cell; TF_SHAPE_INHERITED marks one from
-  uint32_t cell_count, cell_capacity;  // before the fork, which both branches share
-  bool failed;
-} TFForest;
-
 static uint32_t *tf_forest__grow(uint32_t **array, uint32_t *capacity, uint32_t needed,
                                  size_t item) {
   if (needed <= *capacity) return *array;
@@ -552,6 +576,13 @@ static void tf_forest__free(TFForest *self) {
   free(self->cells);
 }
 
+static void tf_forest__clear(TFForest *self) {
+  self->shape_count = 0;
+  self->link_count = 0;
+  self->cell_count = 0;
+  self->failed = false;
+}
+
 static void tf_forest__push_cell(TFForest *self, uint32_t shape) {
   if (!tf_forest__grow(&self->cells, &self->cell_capacity, self->cell_count + 1,
                        sizeof(uint32_t))) {
@@ -564,7 +595,13 @@ static void tf_forest__push_cell(TFForest *self, uint32_t shape) {
 // Replay a branch's log to recover what it built. Cells below the fork are the
 // same objects in both branches, so they are left opaque.
 static void tf_forest__build(TFForest *self, const TFBranch *branch, uint32_t base_depth) {
-  for (uint32_t i = 0; i < base_depth; i++) tf_forest__push_cell(self, TF_SHAPE_INHERITED | i);
+  if (base_depth > 0 &&
+      !tf_forest__grow(&self->cells, &self->cell_capacity, base_depth, sizeof(uint32_t))) {
+    self->failed = true;
+    return;
+  }
+  for (uint32_t i = 0; i < base_depth; i++) self->cells[i] = TF_SHAPE_INHERITED | i;
+  self->cell_count = base_depth;
 
   for (uint32_t i = 0; i < branch->log_length && !self->failed; i++) {
     TFLogEntry entry = branch->log[i];
@@ -625,20 +662,23 @@ static TSSymbol tf_forest__symbol(const TFForest *f, uint32_t cell, const TFNode
                                     : f->shapes[cell].symbol;
 }
 
-static int tf_forest__compare(const TFForest *a, const TFForest *b, const TFNode *nodes) {
+static int tf_forest__compare(const TFForest *a, const TFForest *b, const TFNode *nodes,
+                              uint32_t **stack, uint32_t *capacity) {
   if (a->failed || b->failed) return 0;
   uint32_t count = a->cell_count < b->cell_count ? a->cell_count : b->cell_count;
-  uint32_t *stack = NULL, length = 0, capacity = 0;
+  uint32_t length = 0;
   int result = 0;
 
   for (uint32_t cell = 0; cell < count && result == 0; cell++) {
+    uint32_t left = a->cells[cell], right = b->cells[cell];
+    if (left >= TF_SHAPE_INHERITED && left == right) continue;
     length = 0;
-    if (!tf_forest__grow(&stack, &capacity, 2, sizeof(uint32_t))) break;
-    stack[length++] = a->cells[cell];
-    stack[length++] = b->cells[cell];
+    if (!tf_forest__grow(stack, capacity, 2, sizeof(uint32_t))) break;
+    (*stack)[length++] = left;
+    (*stack)[length++] = right;
 
     while (length > 0) {
-      uint32_t right = stack[--length], left = stack[--length];
+      uint32_t right = (*stack)[--length], left = (*stack)[--length];
       bool left_old = left >= TF_SHAPE_INHERITED, right_old = right >= TF_SHAPE_INHERITED;
 
       // The same cell from before the fork on both sides: literally the same
@@ -665,19 +705,18 @@ static int tf_forest__compare(const TFForest *a, const TFForest *b, const TFNode
         result = x->child_count < y->child_count ? -1 : 1;
         break;
       }
-      if (!tf_forest__grow(&stack, &capacity, length + 2 * x->child_count, sizeof(uint32_t))) {
+      if (!tf_forest__grow(stack, capacity, length + 2 * x->child_count, sizeof(uint32_t))) {
         result = 0;
         break;
       }
       // Pushed last child first, so the first child is examined first.
       for (uint32_t i = x->child_count; i > 0; i--) {
-        stack[length++] = a->links[x->first_child + i - 1];
-        stack[length++] = b->links[y->first_child + i - 1];
+        (*stack)[length++] = a->links[x->first_child + i - 1];
+        (*stack)[length++] = b->links[y->first_child + i - 1];
       }
     }
   }
 
-  free(stack);
   return result;
 }
 
@@ -685,15 +724,15 @@ static int tf_forest__compare(const TFForest *a, const TFForest *b, const TFNode
 // precedence, then the structural comparison, then the one that came first
 // (parser.c:/ts_parser__select_tree/, whose final case is "select_existing").
 static bool tf_branch__prefer_second(const TFBranch *first, const TFBranch *second,
-                                     uint32_t base_depth, const TFNode *nodes) {
+                                     uint32_t base_depth, const TFNode *nodes,
+                                     TFComparison *comparison) {
   if (second->precedence != first->precedence) return second->precedence > first->precedence;
-  TFForest a = {0}, b = {0};
-  tf_forest__build(&a, first, base_depth);
-  tf_forest__build(&b, second, base_depth);
-  bool prefer = tf_forest__compare(&a, &b, nodes) > 0;
-  tf_forest__free(&a);
-  tf_forest__free(&b);
-  return prefer;
+  tf_forest__clear(&comparison->first);
+  tf_forest__clear(&comparison->second);
+  tf_forest__build(&comparison->first, first, base_depth);
+  tf_forest__build(&comparison->second, second, base_depth);
+  return tf_forest__compare(&comparison->first, &comparison->second, nodes, &comparison->stack,
+                            &comparison->stack_capacity) > 0;
 }
 
 // Fork on `token`, run the branches until one is left, and replay its actions
@@ -736,12 +775,17 @@ static void tf_death__keep_furthest(TFDeath *self, const TFBranch *branch) {
 }
 
 static bool tf_parser__split(TFParser *self, TFToken token, TFToken *next) {
-  uint32_t capacity = 8;
-  TFBranch *branches = calloc(capacity, sizeof(TFBranch));
-  if (!branches) {
-    tf_parser__fail(self, token.start_byte, token.start_point, "out of memory");
-    return false;
+  if (self->branch_capacity < 8) {
+    TFBranch *branches = calloc(8, sizeof(TFBranch));
+    if (!branches) {
+      tf_parser__fail(self, token.start_byte, token.start_point, "out of memory");
+      return false;
+    }
+    self->branches = branches;
+    self->branch_capacity = 8;
   }
+  uint32_t capacity = self->branch_capacity;
+  TFBranch *branches = self->branches;
   uint32_t count = 1;
   uint32_t live = 1;
   uint32_t peak = 1;
@@ -749,12 +793,13 @@ static bool tf_parser__split(TFParser *self, TFToken token, TFToken *next) {
   TFDeath death = {0};
   bool ok = false;
 
-  branches[0] = (TFBranch){.lexer = self->lexer, .token = token, .alive = true};
+  branches[0].lexer = self->lexer;
+  branches[0].token = token;
+  branches[0].alive = true;
   // Both of the branch's arrays have to have come through: one can be reallocated
   // while the other fails, which leaves `states` looking fine and `extra` null.
   if (!tf_branch__reserve(&branches[0], self->depth)) {
     tf_parser__fail(self, token.start_byte, token.start_point, "out of memory");
-    free(branches);
     return false;
   }
   memcpy(branches[0].states, self->states, (self->depth + 1) * sizeof(TSStateId));
@@ -798,6 +843,8 @@ static bool tf_parser__split(TFParser *self, TFToken token, TFToken *next) {
           memset(grown + capacity, 0, (next - capacity) * sizeof(TFBranch));
           branches = grown;
           capacity = next;
+          self->branches = branches;
+          self->branch_capacity = capacity;
         }
         for (uint32_t a = 1; a < actions; a++) {
           uint32_t slot = 0;
@@ -827,7 +874,7 @@ static bool tf_parser__split(TFParser *self, TFToken token, TFToken *next) {
         running--;
         live--;
         tf_death__keep_furthest(&death, &branches[i]);
-        tf_branch__retire(&branches[i]);
+        tf_branch__clear(&branches[i]);
       } else if (step == TFStepAccepted) {
         running--;
       }
@@ -839,12 +886,13 @@ static bool tf_parser__split(TFParser *self, TFToken token, TFToken *next) {
       for (uint32_t j = i + 1; j < count; j++) {
         if (!branches[j].alive || branches[j].accepted) continue;
         if (!tf_branch__same(&branches[i], &branches[j])) continue;
-        if (tf_branch__prefer_second(&branches[i], &branches[j], base_depth, self->nodes)) {
+        if (tf_branch__prefer_second(&branches[i], &branches[j], base_depth, self->nodes,
+                                     &self->comparison)) {
           TFBranch swap = branches[i];
           branches[i] = branches[j];
           branches[j] = swap;
         }
-        tf_branch__retire(&branches[j]);
+        tf_branch__clear(&branches[j]);
         running--;
         live--;
       }
@@ -879,7 +927,7 @@ static bool tf_parser__split(TFParser *self, TFToken token, TFToken *next) {
 
   // Opt-in diagnostics: split mode is meant to be invisible, and this is how to
   // check that on a new grammar or corpus.
-  if (getenv("TF_SPLIT_STATS")) {
+  if (self->report_splits) {
     fprintf(stderr, "split: byte=%u peak-live=%u slots=%u log=%u precedence=%lld\n",
             token.start_byte, peak, count, winner->log_length, (long long)winner->precedence);
   }
@@ -903,15 +951,17 @@ static bool tf_parser__split(TFParser *self, TFToken token, TFToken *next) {
   ok = true;
 
 cleanup:
-  for (uint32_t i = 0; i < count; i++) tf_branch__free(&branches[i]);
-  free(branches);
+  for (uint32_t i = 0; i < count; i++) tf_branch__clear(&branches[i]);
   return ok;
 }
 
 bool tf_parse(const TFLanguage *lang, const void *source, size_t size, const TFSink *sink,
               void **root, TFError *error) {
   static const TFSink no_sink = {0};
-  TFParser self = {.lang = lang, .sink = sink ? sink : &no_sink, .error = error};
+  TFParser self = {.lang = lang,
+                   .sink = sink ? sink : &no_sink,
+                   .error = error,
+                   .report_splits = getenv("TF_SPLIT_STATS") != NULL};
   if (error) *error = (TFError){0};
   if (root) *root = NULL;
   if (size > UINT32_MAX) {
@@ -1051,5 +1101,10 @@ done:
   free(self.nodes);
   free(self.trailing);
   free(self.root.children);
+  tf_forest__free(&self.comparison.first);
+  tf_forest__free(&self.comparison.second);
+  free(self.comparison.stack);
+  for (uint32_t i = 0; i < self.branch_capacity; i++) tf_branch__free(&self.branches[i]);
+  free(self.branches);
   return ok;
 }
