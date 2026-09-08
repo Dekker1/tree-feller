@@ -15,7 +15,7 @@ repository = "https://github.com/Dekker1/tree-feller"
 
 [workspace.dependencies]
 tree-feller = { path = "lib" }
-tree-sitter = "=0.26.12"
+tree-sitter = "=0.27.0"
 tree-sitter-language = "0.1"
 # Grammars that load: ABI 15, no external scanner.
 tree-sitter-c = "0.24"
