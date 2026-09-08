@@ -140,7 +140,6 @@ more than 4096 live branches is an error.
 - ABI 15 only; non-terminal extras are unsupported.
 - Inputs must fit in 4 GiB because byte offsets are `uint32_t`.
 - Inputs must be contiguous in memory; `parse_file` memory-maps them.
-- 64-bit platforms only.
 - Without `on_hidden`, the visible layer uses memory proportional to the widest sibling list.
 - A good hand-written parser can be faster. In an AST-for-AST test, tree-feller was
   1.17× slower than Bison, but used 1.2× rather than 16.8× the input memory. PGO closed
