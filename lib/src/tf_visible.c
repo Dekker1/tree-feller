@@ -22,18 +22,22 @@
 // nothing to allocate -- on a data file that is four allocations per value
 // parsed which simply do not happen.
 //
+typedef struct {
+  uint32_t children;
+  uint16_t production;
+} TFVisibleCell;
+
+#if UINTPTR_MAX >= UINT64_MAX && !defined(TF_VISIBLE_FORCE_CELL_ARENA)
 // The tag bit keeps the value non-NULL, which the driver treats as "no value".
-// Spelled as a negative-width array rather than `_Static_assert`, which MSVC
-// only accepts under /std:c11 -- and the Rust crate's `cc` build does not pass a
-// standard flag.
-typedef char TFPackedCellNeeds64BitPointer[sizeof(void *) >= 8 ? 1 : -1];
 // NOLINTBEGIN(performance-no-int-to-ptr): the pointer is the storage, not a
 // pointer to it. That is the whole point -- see above.
 #define TF_PACK(children, production) \
   ((void *)(((uintptr_t)(children) << 17) | ((uintptr_t)(production) << 1) | 1u))
-#define TF_CHILDREN(value) ((uint32_t)((uintptr_t)(value) >> 17))
-#define TF_PRODUCTION(value) ((uint16_t)(((uintptr_t)(value) >> 1) & 0xFFFFu))
 // NOLINTEND(performance-no-int-to-ptr)
+#define TF_USE_PACKED_CELLS 1
+#else
+#define TF_USE_PACKED_CELLS 0
+#endif
 
 typedef struct {
   const TFLanguage *lang;
@@ -45,6 +49,13 @@ typedef struct {
   uint32_t arena_len, arena_capacity;
   TFVisibleChild *scratch;
   uint32_t scratch_capacity;
+
+#if !TF_USE_PACKED_CELLS
+  // Parser values are stable, non-zero, one-based indices into this arena.
+  // They remain valid when realloc moves the allocation.
+  TFVisibleCell *cells;
+  uint32_t cells_len, cells_capacity;
+#endif
 
   // Symbols whose runs the consumer has already refused to fold. Offering a run
   // means handing over every child in it, and a repetition's run grows by one
@@ -63,6 +74,50 @@ typedef struct {
   bool failed;
 } TFFilter;
 
+static TFVisibleCell tf_filter__cell(const TFFilter *self, const void *value) {
+#if TF_USE_PACKED_CELLS
+  (void)self;
+  uintptr_t packed = (uintptr_t)value;
+  return (TFVisibleCell){.children = (uint32_t)(packed >> 17),
+                         .production = (uint16_t)((packed >> 1) & 0xFFFFU)};
+#else
+  uintptr_t index = (uintptr_t)value;
+  if (index == 0 || index > self->cells_len) return (TFVisibleCell){0};
+  return self->cells[index - 1];
+#endif
+}
+
+static void *tf_filter__store_cell(TFFilter *self, uint32_t children, uint16_t production) {
+#if TF_USE_PACKED_CELLS
+  (void)self;
+  return TF_PACK(children, production);
+#else
+  if (self->cells_len == UINT32_MAX) {
+    self->failed = true;
+    return NULL;
+  }
+  if (self->cells_len == self->cells_capacity) {
+    uint32_t next = self->cells_capacity ? self->cells_capacity * 2 : 64;
+    if (next < self->cells_capacity) next = UINT32_MAX;
+    if ((size_t)next > SIZE_MAX / sizeof(TFVisibleCell)) {
+      self->failed = true;
+      return NULL;
+    }
+    TFVisibleCell *grown = realloc(self->cells, (size_t)next * sizeof(TFVisibleCell));
+    if (!grown) {
+      self->failed = true;
+      return NULL;
+    }
+    self->cells = grown;
+    self->cells_capacity = next;
+  }
+  self->cells[self->cells_len++] = (TFVisibleCell){.children = children, .production = production};
+  // The integer is a stable, one-based arena handle, not an object pointer.
+  // NOLINTNEXTLINE(performance-no-int-to-ptr)
+  return (void *)(uintptr_t)self->cells_len;
+#endif
+}
+
 static bool tf_filter__reserve(TFVisibleChild **array, uint32_t *capacity, uint32_t needed) {
   if (needed <= *capacity) return true;
   uint32_t next = *capacity ? *capacity : 64;
@@ -75,22 +130,22 @@ static bool tf_filter__reserve(TFVisibleChild **array, uint32_t *capacity, uint3
 }
 
 static void *tf_filter__on_shift(void *payload, const TFToken *token, bool extra) {
-  (void)payload;
+  TFFilter *self = payload;
   (void)token;
   (void)extra;
   // A token owns no settled entries and was built by no production.
-  return TF_PACK(0, 0);
+  return tf_filter__store_cell(self, 0, 0);
 }
 
 static void *tf_filter__on_reduce(void *payload, const TFReduction *reduction) {
   TFFilter *self = payload;
-  if (self->failed) return TF_PACK(0, 0);
+  if (self->failed) return NULL;
   const TFLanguage *lang = self->lang;
   uint16_t production_id = reduction->production_id;
 
   uint32_t total = 0;
   for (uint32_t i = 0; i < reduction->node_count; i++) {
-    total += TF_CHILDREN(reduction->children[i].value);
+    total += tf_filter__cell(self, reduction->children[i].value).children;
   }
   uint32_t base = self->arena_len - total;
   uint32_t position = base;
@@ -101,7 +156,7 @@ static void *tf_filter__on_reduce(void *payload, const TFReduction *reduction) {
   uint32_t index = 0, structural = 0;
   for (; index < reduction->node_count; index++) {
     const TFNode *child = &reduction->children[index];
-    uint32_t owns = TF_CHILDREN(child->value);
+    uint32_t owns = tf_filter__cell(self, child->value).children;
     TSSymbol alias = child->extra ? 0 : tf_alias_at(lang, production_id, structural);
     if (alias || tf_symbol_metadata(lang, child->symbol).visible) break;
     TSFieldId field = child->extra ? 0 : tf_field_at(lang, production_id, structural);
@@ -121,7 +176,8 @@ static void *tf_filter__on_reduce(void *payload, const TFReduction *reduction) {
   uint32_t produced = 0;
   for (; index < reduction->node_count; index++) {
     const TFNode *child = &reduction->children[index];
-    uint32_t owns = TF_CHILDREN(child->value);
+    TFVisibleCell cell = tf_filter__cell(self, child->value);
+    uint32_t owns = cell.children;
     TSSymbol alias = child->extra ? 0 : tf_alias_at(lang, production_id, structural);
     TSSymbolMetadata metadata = tf_symbol_metadata(lang, child->symbol);
     TSFieldId field = child->extra ? 0 : tf_field_at(lang, production_id, structural);
@@ -136,7 +192,7 @@ static void *tf_filter__on_reduce(void *payload, const TFReduction *reduction) {
       }
       TFVisibleNode node = {
           .symbol = tf_public_symbol(lang, alias ? alias : child->symbol),
-          .production_id = TF_PRODUCTION(child->value),
+          .production_id = cell.production,
           .named = named,
           .extra = child->extra,
           .start_byte = child->start_byte,
@@ -148,7 +204,7 @@ static void *tf_filter__on_reduce(void *payload, const TFReduction *reduction) {
       };
       if (!tf_filter__reserve(&self->scratch, &self->scratch_capacity, produced + 1)) {
         self->failed = true;
-        return TF_PACK(0, 0);
+        return NULL;
       }
       self->scratch[produced++] = (TFVisibleChild){
           .symbol = node.symbol,
@@ -159,7 +215,7 @@ static void *tf_filter__on_reduce(void *payload, const TFReduction *reduction) {
     } else {
       if (!tf_filter__reserve(&self->scratch, &self->scratch_capacity, produced + owns)) {
         self->failed = true;
-        return TF_PACK(0, 0);
+        return NULL;
       }
       for (uint32_t i = 0; i < owns; i++) {
         TFVisibleChild entry = self->arena[position + i];
@@ -180,7 +236,7 @@ static void *tf_filter__on_reduce(void *payload, const TFReduction *reduction) {
   if (produced > 0) {
     if (!tf_filter__reserve(&self->arena, &self->arena_capacity, settled + produced)) {
       self->failed = true;
-      return TF_PACK(0, 0);
+      return NULL;
     }
     memcpy(&self->arena[settled], self->scratch, produced * sizeof(TFVisibleChild));
   }
@@ -230,7 +286,7 @@ static void *tf_filter__on_reduce(void *payload, const TFReduction *reduction) {
   self->root_start_point = reduction->start_point;
   self->root_end_point = reduction->end_point;
 
-  return TF_PACK(self->arena_len - base, production_id);
+  return tf_filter__store_cell(self, self->arena_len - base, production_id);
 }
 
 bool tf_parse_visible(const TFLanguage *lang, const void *source, size_t size,
@@ -250,7 +306,7 @@ bool tf_parse_visible(const TFLanguage *lang, const void *source, size_t size,
 
   // The root has no parent to judge it, so it is emitted on its own terms.
   if (ok && raw_root) {
-    uint32_t owns = TF_CHILDREN(raw_root);
+    uint32_t owns = tf_filter__cell(&self, raw_root).children;
     TSSymbolMetadata metadata = tf_symbol_metadata(lang, self.root_symbol);
     void *value = NULL;
     if (metadata.visible && self.sink->on_node) {
@@ -282,5 +338,8 @@ bool tf_parse_visible(const TFLanguage *lang, const void *source, size_t size,
   free(self.arena);
   free(self.scratch);
   free(self.declined);
+#if !TF_USE_PACKED_CELLS
+  free(self.cells);
+#endif
   return ok;
 }

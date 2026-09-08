@@ -173,6 +173,24 @@ if(TF_BUILD_TESTS)
   target_link_libraries(test_c_api PRIVATE tf_testing)
   add_test(NAME c_api COMMAND test_c_api)
 
+  # Exercise the 32-bit visible-cell representation on every test host. A real
+  # 32-bit target selects this path from UINTPTR_MAX; the define only makes it
+  # practical to run the same code on the usual 64-bit CI machines.
+  add_library(tree_feller_32bit_cells STATIC
+    lib/src/tf_file.c
+    lib/src/tf_language.c
+    lib/src/tf_lexer.c
+    lib/src/tf_parser.c
+    lib/src/tf_visible.c)
+  target_compile_definitions(tree_feller_32bit_cells PRIVATE TF_VISIBLE_FORCE_CELL_ARENA=1)
+  target_include_directories(tree_feller_32bit_cells
+    PUBLIC lib/include
+    PRIVATE lib/src lib/include/tree_feller)
+  add_executable(test_c_api_32bit_cells tests/test_c_api.c)
+  target_link_libraries(test_c_api_32bit_cells PRIVATE tree_feller_32bit_cells tf_grammars)
+  target_include_directories(test_c_api_32bit_cells PRIVATE tests)
+  add_test(NAME c_api_32bit_cells COMMAND test_c_api_32bit_cells)
+
   # The acceptance test: the node stream against a walk of the tree real
   # libtree-sitter builds. Also runnable over a directory -- see the README.
   #
