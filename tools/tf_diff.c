@@ -191,16 +191,24 @@ static bool same(const Node *a, const Node *b) { return memcmp(a, b, sizeof(Node
 
 // The end of the first token beginning at or after `from`: how far tree-feller
 // may legitimately get past the reference's error region.
-static uint32_t error_limit(TSNode node, uint32_t from) {
+static uint32_t next_token_end(TSNode node, uint32_t from) {
   uint32_t count = ts_node_child_count(node);
   if (count == 0) return ts_node_start_byte(node) >= from ? ts_node_end_byte(node) : from;
   for (uint32_t i = 0; i < count; i++) {
     TSNode child = ts_node_child(node, i);
     if (ts_node_end_byte(child) < from) continue;
-    uint32_t limit = error_limit(child, from);
+    uint32_t limit = next_token_end(child, from);
     if (limit > from) return limit;
   }
   return from;
+}
+
+static uint32_t error_limit(TSNode root, uint32_t from) {
+  uint32_t limit = next_token_end(root, from);
+  // EOF is a lookahead too, but has no visible leaf in a cursor walk. If no
+  // later leaf exists, a parser may consume trailing whitespace before finding
+  // the missing token at EOF (for example an unfinished compiler directive).
+  return limit > from ? limit : ts_node_end_byte(root);
 }
 
 static void check(const char *path, const TSLanguage *ts, const void *bytes, uint32_t size) {

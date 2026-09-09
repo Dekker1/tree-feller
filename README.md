@@ -176,6 +176,10 @@ Files rejected by the grammar are counted separately. The repository fetches eig
 hash-pinned ABI-15 grammars; no generated parser is committed. CI tests Linux, macOS,
 Windows, sanitizers, lint, and the packaged crate.
 
+The [stress-testing report](tests/STRESS_TESTING.md) records the SystemVerilog
+audit, fixed regressions, and compatibility limits of the other suggested
+outlier grammars.
+
 Run throughput benchmarks with `cargo bench -p tf-bench`. CodSpeed tracks them in CI.
 JSON needs `npx` for ABI-15 regeneration and is skipped when unavailable.
 

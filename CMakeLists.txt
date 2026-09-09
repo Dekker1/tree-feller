@@ -216,7 +216,7 @@ if(TF_BUILD_TESTS)
     endforeach()
 
     # Reduced regressions from the outlier-grammar stress audit.
-    foreach(case static_call parenthesized_concat indexed_method empty_port invalid_range invalid_scope_range)
+    foreach(case static_call parenthesized_concat indexed_method empty_port invalid_range invalid_scope_range pragma_eof line_eof)
       add_test(NAME regression_systemverilog_${case}
                COMMAND tf_diff --grammar systemverilog --expect-failures 0
                        "${PROJECT_SOURCE_DIR}/tests/fixtures/systemverilog/${case}.sv")

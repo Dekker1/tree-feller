@@ -311,6 +311,27 @@ fn systemverilog_deep_and_wide_matches_tree_sitter() {
     }
 }
 
+#[test]
+fn systemverilog_incomplete_directives_fail_at_eof() {
+    for source in [
+        include_bytes!("fixtures/systemverilog/pragma_eof.sv").as_slice(),
+        include_bytes!("fixtures/systemverilog/line_eof.sv").as_slice(),
+    ] {
+        assert!(!compare(
+            Grammar::SystemVerilog,
+            "incomplete directive",
+            source
+        ));
+        let error = Grammar::SystemVerilog
+            .tree_feller()
+            .parse(source, |_: Node<'_>, children: &mut Vec<Child<()>>| {
+                children.clear()
+            })
+            .expect_err("missing directive argument");
+        assert_eq!(error.byte as usize, source.len());
+    }
+}
+
 // Reduced from the outlier-grammar audit. These assert reference acceptance
 // and tree equality for valid inputs, and rejection for malformed inputs.
 macro_rules! systemverilog_regression {
