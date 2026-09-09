@@ -62,7 +62,7 @@ paying a call — 6.9% of a null-sink profile, in a frame of its own. Worth 14%
 
 `tf_lexer__start` does not re-decode either. tree-sitter decodes there because
 a move between chunks or included ranges can have invalidated the lookahead;
-with one buffer only `tf_lexer__goto` and `tf_lexer__do_advance` move the
+with one buffer only `tf_lexer_seek` and `tf_lexer__do_advance` move the
 position and both refresh it. Worth ~1.5% across the benchmarks, being one
 decode per token and another on every keyword re-lex.
 
@@ -94,8 +94,65 @@ nothing to memo -- 66% hit rate and 16% *slower*); dropping the
 `if (self->lookahead_size)` guard in `tf_lexer__do_advance`, which is logically
 dead here but cost 3-5% on solidity; keeping `TSLexerMode`/`reserved_word_set_id`
 across the generated call; a branchless row/column update; and skipping the
-trailing `tf_lexer__goto` when the position is already right, which it is for
+trailing `tf_lexer_seek` when the position is already right, which it is for
 79-100% of tokens and still measured neutral.
+
+Conflict handling is the other hot path, and it is the one that scales badly.
+Three things paid for themselves, all measured over directory-sized corpora
+rather than fixtures, because a fixture microbenchmark does not reach the shapes
+that matter:
+
+* **The inherited prefix is built on demand.** A split used to turn every cell
+  of the real stack below the fork into a graph node up front. Only 5.5% to 16%
+  of those cells are ever reached by a reduction, and building the rest was 48%
+  to 68% of every tree the split allocated. `tf_spec__extend` unrolls one cell at
+  a time; a pop that is only collecting the speculative region stops at the
+  frontier instead of walking to the bottom of the stack.
+* **`tf_spec__pop` takes a direct path when the chain has no fork**, which is
+  almost every pop. The breadth-first walk, its edge list and its iterator array
+  only earn their keep at a real fork.
+* **A graph node keeps its links in a shared arena.** An inline `links[8]` made
+  `TFSpecNode` 96 bytes when a node almost always has exactly one link; it is now
+  32. `TFSpecTree` was reordered to 56 bytes from 64 at the same time, worth
+  under 1% on its own and kept for the memory: peak RSS on the worst MiniZinc
+  file in the local corpora went 265 MB -> 173 MB.
+
+Together, against the tree at the point the conflict fixes landed, null-sink over
+directory-sized corpora: -25% (SystemVerilog, 2,902 files), -27% (Go, 1,200),
+-39% (Solidity, 240), -18% (MiniZinc, 2,000), -6% (C, 281), -1% (DataZinc,
+122 MB). Peak RSS on the MiniZinc corpus went 270 MB -> 179 MB.
+
+Also measured on the speculative path and reverted: **writing `TFSpecNode` field
+by field** instead of assigning the struct, so the seven unused link slots are
+not cleared — zero, clang already narrows the store, and it leaves the struct
+partly uninitialised for nothing; **packing the replay completion marker** so a
+finished node is not read out of the tree arena a second time — a wash on the
+corpora and 0.4% *slower* on the case it was aimed at, because the postorder
+stack doubles in width; **a multi-entry lexer cache** keyed on (byte, state) —
+an exact repeat within one split happens 0.0% to 0.3% of the time, so there is
+nothing to cache, and reusing a token across *different* states is exactly the
+predicate `tf_spec__lex` already ports from `ts_parser__can_reuse_first_leaf`;
+**marking `tf_parser__split` noinline** — ±0.3%, confirming the earlier reading.
+
+What is left is inherent to replaying a decision. A grammar conflict that cannot
+be resolved until the end of a construct keeps the split alive for the whole
+construct, and everything in it is built speculatively and then replayed: about
+twice the work, and speculative state proportional to the construct rather than
+to nesting depth. MiniZinc's array literal is the clearest case -- `v = [...]`
+forks at the `[` and cannot settle until the `]` -- so an 800 KB `.mzn` array
+runs at 6.8 MB/s and 300 bytes of parser state per input byte, against 70 MB/s
+and a couple of megabytes for the same data as `.dzn`, which has no such
+conflict. Both time and memory are linear in the construct, not quadratic, and
+the branch that shipped the conflict fixes was 5.4 MB/s and 480 bytes per byte,
+so this is better than it was and still worse than the incorrect parser it
+replaced (12 MB/s, 226 bytes per byte). 99.998% of the speculative advances in
+that split happen with a single live head: the alternatives merge almost
+immediately and leave one unresolved fork near the bottom of the stack, which
+`tf_spec__unique` will not accept and which nothing pops through until the
+construct closes. Ending the split there would mean flushing the settled part of
+the stack into the real parser mid-split, which moves `p->depth` under the
+frontier and under the private-replay capture, so it was not attempted.
+`integration/perf/` has a generator for the shape.
 
 ## Conflicts
 

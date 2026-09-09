@@ -387,6 +387,12 @@ systemverilog_regression!(
     "Regression: scope expression in part-select",
     false
 );
+systemverilog_regression!(
+    systemverilog_clocking_expect,
+    "fixtures/systemverilog/clocking_expect.sv",
+    "Coverage: a stack cell unrolled after the private replay has already run",
+    true
+);
 
 /// Point `TF_CORPUS` at a directory to run the same comparison over every `.c`
 /// file in it. Left out of the default run so `cargo test` stays hermetic.

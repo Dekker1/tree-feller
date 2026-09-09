@@ -34,13 +34,18 @@
 #define TF_SPEC_ITERATORS 64
 #define TF_SPEC_VERSIONS 6
 
+// Ordered so the small fields fill the hole ahead of `precedence`: 56 bytes
+// rather than 64, over an arena that is one entry per speculative shift and
+// reduction. `structural_count` is a production's child count, which the ABI
+// itself stores in a uint8_t.
 typedef struct {
   TFToken token;
   uint32_t padding_start;
-  uint32_t first_child, child_count, structural_count;
+  uint32_t first_child, child_count;
   uint16_t production_id;
-  int64_t precedence;
+  uint8_t structural_count;
   bool leaf, extra, inherited, opaque;
+  int64_t precedence;
 } TFSpecTree;
 
 typedef struct {
@@ -51,8 +56,10 @@ typedef struct {
   uint32_t byte;
   TFPoint point;
   int64_t precedence;
-  TFSpecLink links[TF_SPEC_LINKS];
-  uint32_t link_count;
+  // Links live in a shared arena: a node almost always has exactly one, and an
+  // inline array of eight would triple the size of every node in the graph.
+  uint32_t first_link;
+  uint8_t link_count, link_capacity;
 } TFSpecNode;
 typedef struct {
   uint32_t node;
@@ -73,6 +80,8 @@ struct TFSpec {
   uint32_t tree_count, tree_capacity;
   TFSpecNode *nodes;
   uint32_t node_count, node_capacity;
+  TFSpecLink *links;
+  uint32_t link_count, link_capacity;
   TFSpecHead *heads;
   uint32_t head_count, head_capacity;
   uint32_t *children;
@@ -83,6 +92,14 @@ struct TFSpec {
   uint32_t slice_count, slice_capacity;
   uint32_t *scratch;
   uint32_t scratch_count, scratch_capacity;
+  // The inherited prefix, materialized on demand: prefix_tree[k] is the tree for
+  // real stack cell prefix_depth-1-k, and capture_id[i] is cell i's shape once a
+  // replay has recovered it.
+  uint32_t *prefix_tree;
+  uint32_t prefix_count, prefix_tree_capacity;
+  uint32_t *capture_id;
+  uint32_t capture_capacity;
+  uint32_t frontier, prefix_left, prefix_depth;
   bool failed, materialized, captured;
   TFParser *owner;
   uint32_t fork_byte;
@@ -130,11 +147,14 @@ static void tf_spec__free(TFSpec *s) {
   if (!s) return;
   free(s->trees);
   free(s->nodes);
+  free(s->links);
   free(s->heads);
   free(s->children);
   free(s->edges);
   free(s->slices);
   free(s->scratch);
+  free(s->prefix_tree);
+  free(s->capture_id);
   free(s);
 }
 
@@ -155,25 +175,93 @@ static uint32_t tf_spec__head(TFSpec *s, uint32_t node) {
   return s->head_count++;
 }
 
+// Usually the last head, and an unguarded memmove of nothing is still a call.
 static void tf_spec__remove_head(TFSpec *s, uint32_t v) {
-  memmove(s->heads + v, s->heads + v + 1, (s->head_count - v - 1) * sizeof(*s->heads));
+  if (v + 1 < s->head_count)
+    memmove(s->heads + v, s->heads + v + 1, (s->head_count - v - 1) * sizeof(*s->heads));
   s->head_count--;
+}
+
+// A run of link slots. Links are never released, and a node that outgrows its
+// run takes a longer one -- at most eight, so the waste is bounded.
+static uint32_t tf_spec__links(TFSpec *s, uint32_t count) {
+  if (!TF_SPEC_RESERVE(s, links, link_capacity, s->link_count + count)) return TF_SPEC_NONE;
+  uint32_t at = s->link_count;
+  s->link_count += count;
+  return at;
 }
 
 static uint32_t tf_spec__push(TFSpec *s, uint32_t previous, uint32_t tree, TSStateId state) {
   if (!TF_SPEC_RESERVE(s, nodes, node_capacity, s->node_count + 1)) return TF_SPEC_NONE;
-  TFSpecTree t = s->trees[tree];
-  TFSpecNode node = {.state = state,
-                     .byte = t.token.end_byte,
-                     .point = t.token.end_point,
-                     .precedence = s->nodes[previous].precedence + t.precedence,
-                     .links = {{previous, tree}},
-                     .link_count = 1};
-  s->nodes[s->node_count] = node;
+  uint32_t at = tf_spec__links(s, 1);
+  if (s->failed) return TF_SPEC_NONE;
+  s->links[at] = (TFSpecLink){previous, tree};
+  const TFSpecTree *t = &s->trees[tree];
+  TFSpecNode *node = &s->nodes[s->node_count];
+  node->state = state;
+  node->byte = t->token.end_byte;
+  node->point = t->token.end_point;
+  node->precedence = s->nodes[previous].precedence + t->precedence;
+  node->first_link = at;
+  node->link_count = 1;
+  node->link_capacity = 1;
   return s->node_count++;
 }
 
 static bool tf_spec__materialize(TFSpec *s);
+
+// A prefix cell whose shape a replay has already recovered.
+static void tf_spec__resolve(TFSpec *s, uint32_t k) {
+  uint32_t slot = s->prefix_tree[k], id = s->capture_id[s->prefix_depth - 1 - k];
+  s->trees[slot].first_child = s->trees[id].first_child;
+  s->trees[slot].child_count = s->trees[id].child_count;
+  s->trees[slot].opaque = false;
+}
+
+// The real stack below the fork is one chain, so it only has to become graph
+// nodes where a reduction reaches into it -- 6% to 16% of its cells, measured.
+// Everything above stays speculative, and a pop that is only collecting the
+// speculative region stops here instead of walking the whole stack.
+static void tf_spec__extend(TFSpec *s) {
+  const TFParser *p = s->owner;
+  uint32_t i = s->prefix_left - 1;
+  TFNode n = p->nodes[i];
+  uint32_t byte = i ? p->nodes[i - 1].end_byte : 0;
+  TFPoint point = i ? p->nodes[i - 1].end_point : (TFPoint){0, 0};
+  uint32_t tree = tf_spec__tree(s, (TFSpecTree){.token = {.symbol = n.symbol,
+                                                          .start_byte = n.start_byte,
+                                                          .end_byte = n.end_byte,
+                                                          .start_point = n.start_point,
+                                                          .end_point = n.end_point},
+                                                .padding_start = byte,
+                                                .child_count = TF_SPEC_NONE,
+                                                .extra = n.extra,
+                                                .inherited = true,
+                                                .opaque = true});
+  if (s->failed) return;
+  if (!TF_SPEC_RESERVE(s, prefix_tree, prefix_tree_capacity, s->prefix_count + 1)) return;
+  if (!TF_SPEC_RESERVE(s, nodes, node_capacity, s->node_count + 1)) return;
+  s->prefix_tree[s->prefix_count++] = tree;
+  uint32_t at = tf_spec__links(s, 1);
+  if (s->failed) return;
+  uint32_t below = s->node_count++;
+  TFSpecNode *node = &s->nodes[below];
+  node->state = p->states[i];
+  node->byte = byte;
+  node->point = point;
+  node->precedence = 0;
+  node->first_link = 0;
+  node->link_count = 0;
+  node->link_capacity = 0;
+  s->links[at] = (TFSpecLink){below, tree};
+  s->nodes[s->frontier].first_link = at;
+  s->nodes[s->frontier].link_count = 1;
+  s->nodes[s->frontier].link_capacity = 1;
+  s->frontier = below;
+  s->prefix_left = i;
+  // A replay that already ran cannot be asked again for this cell's shape.
+  if (s->materialized && s->captured) tf_spec__resolve(s, s->prefix_count - 1);
+}
 
 // stack.c:stack__subtree_is_equivalent. Equivalent links keep the existing
 // tree on a precedence tie; this is intentionally NOT ts_subtree_compare.
@@ -195,29 +283,49 @@ static bool tf_spec__equivalent(TFSpec *s, uint32_t a, uint32_t b) {
 // alternatives below the top state instead of discarding an entire stack.
 static void tf_spec__add_link(TFSpec *s, uint32_t target, TFSpecLink link) {
   if (link.node == target) return;
+  // links[0] of the frontier belongs to the prefix; claim it before adding here.
+  if (target == s->frontier && s->prefix_left) {
+    tf_spec__extend(s);
+    if (s->failed) return;
+  }
   TFSpecNode *node = &s->nodes[target];
   for (uint32_t i = 0; i < node->link_count; i++) {
-    TFSpecLink existing = node->links[i];
+    TFSpecLink existing = s->links[node->first_link + i];
     if (!tf_spec__equivalent(s, existing.tree, link.tree)) continue;
     if (existing.node == link.node) {
       if (s->trees[link.tree].precedence > s->trees[existing.tree].precedence) {
-        node->links[i].tree = link.tree;
+        s->links[node->first_link + i].tree = link.tree;
         node->precedence = s->nodes[link.node].precedence + s->trees[link.tree].precedence;
       }
       return;
     }
     if (s->nodes[existing.node].state == s->nodes[link.node].state &&
         s->nodes[existing.node].byte == s->nodes[link.node].byte) {
-      TFSpecNode other = s->nodes[link.node];
-      for (uint32_t j = 0; j < other.link_count; j++)
-        tf_spec__add_link(s, existing.node, other.links[j]);
+      // Copied out: the recursion can grow the link arena and move it. glibc
+      // declares memcpy non-null, so an empty run must not reach it.
+      TFSpecLink copy[TF_SPEC_LINKS];
+      uint32_t n = s->nodes[link.node].link_count;
+      if (n) memcpy(copy, s->links + s->nodes[link.node].first_link, n * sizeof(*copy));
+      for (uint32_t j = 0; j < n; j++) tf_spec__add_link(s, existing.node, copy[j]);
+      if (s->failed) return;
+      // The recursion can unroll another prefix cell, which moves the node array.
       int64_t prec = s->nodes[link.node].precedence + s->trees[link.tree].precedence;
-      if (prec > node->precedence) node->precedence = prec;
+      if (prec > s->nodes[target].precedence) s->nodes[target].precedence = prec;
       return;
     }
   }
   if (node->link_count == TF_SPEC_LINKS) return;  // stack.c:MAX_LINK_COUNT
-  node->links[node->link_count++] = link;
+  if (node->link_count == node->link_capacity) {
+    uint32_t want = node->link_capacity ? (uint32_t)node->link_capacity * 2 : 1;
+    if (want > TF_SPEC_LINKS) want = TF_SPEC_LINKS;
+    uint32_t at = tf_spec__links(s, want);
+    if (s->failed) return;
+    if (node->link_count)
+      memcpy(s->links + at, s->links + node->first_link, node->link_count * sizeof(*s->links));
+    node->first_link = at;
+    node->link_capacity = (uint8_t)want;
+  }
+  s->links[node->first_link + node->link_count++] = link;
   int64_t prec = s->nodes[link.node].precedence + s->trees[link.tree].precedence;
   if (prec > node->precedence) node->precedence = prec;
 }
@@ -227,8 +335,10 @@ static bool tf_spec__merge(TFSpec *s, uint32_t a, uint32_t b) {
   if (x.halted || y.halted || s->nodes[x.node].state != s->nodes[y.node].state ||
       s->nodes[x.node].byte != s->nodes[y.node].byte)
     return false;
-  TFSpecNode other = s->nodes[y.node];
-  for (uint32_t i = 0; i < other.link_count; i++) tf_spec__add_link(s, x.node, other.links[i]);
+  TFSpecLink copy[TF_SPEC_LINKS];
+  uint32_t n = s->nodes[y.node].link_count;
+  if (n) memcpy(copy, s->links + s->nodes[y.node].first_link, n * sizeof(*copy));
+  for (uint32_t i = 0; i < n; i++) tf_spec__add_link(s, x.node, copy[i]);
   tf_spec__remove_head(s, b);
   return true;
 }
@@ -267,9 +377,8 @@ static bool tf_spec__prefer(TFSpec *s, uint32_t a, uint32_t b) {
   return false;
 }
 
-static uint32_t tf_spec__parent(TFSpec *s, TSSymbol symbol, uint16_t production,
-                                uint32_t structural, uint32_t first, uint32_t count,
-                                uint32_t base) {
+static uint32_t tf_spec__parent(TFSpec *s, TSSymbol symbol, uint16_t production, uint8_t structural,
+                                uint32_t first, uint32_t count, uint32_t base) {
   TFSpecTree tree = {.token = {.symbol = symbol,
                                .start_byte = s->nodes[base].byte,
                                .end_byte = s->nodes[base].byte,
@@ -297,13 +406,58 @@ static uint32_t tf_spec__parent(TFSpec *s, TSSymbol symbol, uint16_t production,
 // stack.c:stack__iter and ts_stack__add_slice. The breadth-first visitation
 // order matters when equivalent alternatives have equal precedence.
 static void tf_spec__pop(TFSpec *s, uint32_t version, uint32_t goal) {
-  TFSpecIterator it[TF_SPEC_ITERATORS] = {{s->heads[version].node, TF_SPEC_NONE, 0, 0}};
-  uint32_t length = 1;
   s->slice_count = 0;
   s->edge_count = 0;
+
+  // A chain with no fork has exactly one path, so it yields exactly one slice.
+  // Most pops are that: the breadth-first walk below, with its edge list and its
+  // per-iterator bookkeeping, only earns its keep at a real fork.
+  {
+    uint32_t node = s->heads[version].node, count = 0, walked = 0;
+    for (;;) {
+      if (goal == TF_SPEC_NONE ? s->nodes[node].link_count == 0 : count == goal) {
+        if (!TF_SPEC_RESERVE(s, children, child_capacity, s->child_count + walked) ||
+            !TF_SPEC_RESERVE(s, slices, slice_capacity, 1))
+          return;
+        // Deepest first, as the edge chain would have produced them.
+        uint32_t first = s->child_count, n = s->heads[version].node;
+        for (uint32_t i = walked; i > 0; i--) {
+          TFSpecLink step = s->links[s->nodes[n].first_link];
+          s->children[first + i - 1] = step.tree;
+          n = step.node;
+        }
+        s->child_count += walked;
+        uint32_t v = tf_spec__head(s, node);
+        if (s->failed) return;
+        s->slices[0] = (TFSpecSlice){v, first, walked};
+        s->slice_count = 1;
+        return;
+      }
+      if (goal != TF_SPEC_NONE && node == s->frontier && s->prefix_left) {
+        tf_spec__extend(s);
+        if (s->failed) return;
+      }
+      if (s->nodes[node].link_count != 1) break;
+      TFSpecLink link = s->links[s->nodes[node].first_link];
+      count += !s->trees[link.tree].extra;
+      walked++;
+      node = link.node;
+    }
+  }
+
+  // Only element 0 is live on entry; zeroing the other 63 costs a kilobyte of
+  // memset on every reduction, and a pop is the innermost speculative loop.
+  TFSpecIterator it[TF_SPEC_ITERATORS];
+  it[0] = (TFSpecIterator){s->heads[version].node, TF_SPEC_NONE, 0, 0};
+  uint32_t length = 1;
   while (length && !s->failed) {
     for (uint32_t i = 0, size = length; i < size; i++) {
       TFSpecIterator current = it[i];
+      if (goal != TF_SPEC_NONE && current.node == s->frontier && s->prefix_left &&
+          current.count != goal) {
+        tf_spec__extend(s);
+        if (s->failed) return;
+      }
       TFSpecNode node = s->nodes[current.node];
       bool pop = goal == TF_SPEC_NONE ? node.link_count == 0 : current.count == goal;
       if (pop) {
@@ -323,13 +477,14 @@ static void tf_spec__pop(TFSpec *s, uint32_t version, uint32_t goal) {
         }
         if (v == TF_SPEC_NONE) v = tf_spec__head(s, current.node);
         if (s->failed) return;
-        memmove(s->slices + slot + 1, s->slices + slot,
-                (s->slice_count - slot) * sizeof(*s->slices));
+        if (slot < s->slice_count)
+          memmove(s->slices + slot + 1, s->slices + slot,
+                  (s->slice_count - slot) * sizeof(*s->slices));
         s->slices[slot] = (TFSpecSlice){v, first, current.length};
         s->slice_count++;
       }
       if (pop || node.link_count == 0) {
-        memmove(it + i, it + i + 1, (length - i - 1) * sizeof(*it));
+        if (i + 1 < length) memmove(it + i, it + i + 1, (length - i - 1) * sizeof(*it));
         length--;
         i--;
         size--;
@@ -340,11 +495,11 @@ static void tf_spec__pop(TFSpec *s, uint32_t version, uint32_t goal) {
         TFSpecLink link;
         if (j == node.link_count) {
           slot = i;
-          link = node.links[0];
+          link = s->links[node.first_link];
         } else {
           if (length == TF_SPEC_ITERATORS) continue;
           slot = length++;
-          link = node.links[j];
+          link = s->links[node.first_link + j];
         }
         if (!TF_SPEC_RESERVE(s, edges, edge_capacity, s->edge_count + 1)) return;
         s->edges[s->edge_count] = (TFSpecEdge){link.tree, current.edge};
@@ -451,6 +606,10 @@ static bool tf_spec__lex(TFSpec *s, TFParser *p, uint32_t node, TFToken *token, 
 }
 
 static void tf_spec__accept(TFSpec *s, uint32_t version, TFToken eof) {
+  // The root absorbs everything below it, and roots proposed at different times
+  // are compared against each other, so the whole prefix has to be real here.
+  while (s->prefix_left && !s->failed) tf_spec__extend(s);
+  if (s->failed) return;
   uint32_t top = s->heads[version].node;
   uint32_t leaf = tf_spec__tree(
       s,
@@ -576,7 +735,7 @@ static void tf_spec__condense(TFSpec *s) {
 static bool tf_spec__unique(const TFSpec *s, uint32_t node) {
   while (s->nodes[node].link_count) {
     if (s->nodes[node].link_count != 1) return false;
-    node = s->nodes[node].links[0].node;
+    node = s->links[s->nodes[node].first_link].node;
   }
   return true;
 }
@@ -620,6 +779,7 @@ static bool tf_parser__split(TFParser *p, TFToken token, TFToken *next) {
   TFSpec *s = p->spec;
   s->tree_count = 0;
   s->node_count = 0;
+  s->link_count = 0;
   s->head_count = 0;
   s->child_count = 0;
   s->slice_count = 0;
@@ -636,25 +796,21 @@ static bool tf_parser__split(TFParser *p, TFToken token, TFToken *next) {
   s->cached_keyword = p->lexer.token_is_keyword;
   s->has_cache = true;
   s->cached_byte = p->depth ? p->nodes[p->depth - 1].end_byte : 0;
+  s->prefix_count = 0;
+  s->prefix_depth = p->depth;
+  s->prefix_left = p->depth;
   if (!TF_SPEC_RESERVE(s, nodes, node_capacity, 1)) goto oom;
-  s->nodes[s->node_count++] = (TFSpecNode){.state = 1};
+  // One node standing for the whole real stack; tf_spec__extend unrolls it.
+  s->nodes[0].state = p->states[p->depth];
+  s->nodes[0].byte = s->cached_byte;
+  s->nodes[0].point = p->depth ? p->nodes[p->depth - 1].end_point : (TFPoint){0, 0};
+  s->nodes[0].precedence = 0;
+  s->nodes[0].first_link = 0;
+  s->nodes[0].link_count = 0;
+  s->nodes[0].link_capacity = 0;
+  s->node_count = 1;
+  s->frontier = 0;
   uint32_t top = 0;
-  for (uint32_t i = 0; i < p->depth; i++) {
-    TFNode n = p->nodes[i];
-    uint32_t tree = tf_spec__tree(s, (TFSpecTree){.token = {.symbol = n.symbol,
-                                                            .start_byte = n.start_byte,
-                                                            .end_byte = n.end_byte,
-                                                            .start_point = n.start_point,
-                                                            .end_point = n.end_point},
-                                                  .padding_start = s->nodes[top].byte,
-                                                  .child_count = TF_SPEC_NONE,
-                                                  .extra = n.extra,
-                                                  .inherited = true,
-                                                  .opaque = true});
-    if (s->failed) goto oom;
-    top = tf_spec__push(s, top, tree, p->states[i + 1]);
-    if (s->failed) goto oom;
-  }
   tf_spec__head(s, top);
   if (s->failed) goto oom;
   uint32_t last_position = 0, peak = 1, first = 0, count = 0;
