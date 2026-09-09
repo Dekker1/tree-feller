@@ -22,6 +22,8 @@ tree-sitter-c = "0.24"
 tree-sitter-go = "0.25"
 tree-sitter-regex = "0.25"
 tree-sitter-solidity = "1.2"
+# Its parser.c is byte-identical to the commit pinned by CMake.
+tree-sitter-systemverilog = "=0.4.0"
 # Not on crates.io, but they are proper crates in the shackle repository, pinned
 # to the commit the C tests fetch their tables from.
 tree-sitter-datazinc = { git = "https://github.com/shackle-rs/shackle", rev = "03b6430" }

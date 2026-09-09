@@ -205,7 +205,7 @@ if(TF_BUILD_TESTS)
     # walk of the tree libtree-sitter builds. Pinned to an exact count rather than
     # "no failures", so a regression shows up and a fix does too.
     #
-    foreach(grammar c go regex solidity datazinc minizinc eprime)
+    foreach(grammar c go regex solidity datazinc minizinc eprime systemverilog)
       if(NOT DEFINED corpus_failures_${grammar})
         set(corpus_failures_${grammar} 0)
       endif()

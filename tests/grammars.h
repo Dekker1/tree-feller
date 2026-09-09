@@ -17,6 +17,7 @@ const TSLanguage *tree_sitter_solidity(void);
 const TSLanguage *tree_sitter_datazinc(void);
 const TSLanguage *tree_sitter_minizinc(void);
 const TSLanguage *tree_sitter_eprime(void);
+const TSLanguage *tree_sitter_systemverilog(void);
 
 typedef struct {
   const char *name;
@@ -34,6 +35,7 @@ static const TFGrammar TF_GRAMMARS[] = {
     {"datazinc", tree_sitter_datazinc, ".dzn"},
     {"minizinc", tree_sitter_minizinc, ".mzn"},
     {"eprime", tree_sitter_eprime, ".eprime"},
+    {"systemverilog", tree_sitter_systemverilog, ".sv"},
 };
 #define TF_GRAMMAR_COUNT (sizeof(TF_GRAMMARS) / sizeof(TF_GRAMMARS[0]))
 

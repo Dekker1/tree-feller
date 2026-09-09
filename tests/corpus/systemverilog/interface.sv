@@ -1,0 +1,1 @@
+interface bus(input logic clk); logic req,ack; modport master(input ack, output req); clocking cb @(posedge clk); input ack; output req; endclocking endinterface

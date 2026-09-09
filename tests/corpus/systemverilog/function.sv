@@ -1,0 +1,1 @@
+package p; function automatic int f(input int x); return x ? f(x-1) : 1; endfunction endpackage

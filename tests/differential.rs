@@ -31,6 +31,7 @@ enum Grammar {
     C,
     Go,
     Regex,
+    SystemVerilog,
 }
 
 impl Grammar {
@@ -41,6 +42,7 @@ impl Grammar {
             Grammar::C => tree_sitter_c::LANGUAGE,
             Grammar::Go => tree_sitter_go::LANGUAGE,
             Grammar::Regex => tree_sitter_regex::LANGUAGE,
+            Grammar::SystemVerilog => tree_sitter_systemverilog::LANGUAGE,
         }
     }
 
@@ -235,6 +237,30 @@ fn go_matches_tree_sitter() {
 #[test]
 fn regex_matches_tree_sitter() {
     check(Grammar::Regex, "regex", REGEX);
+}
+
+/// These exercise the large grammar's casts, contextual keywords, assertions,
+/// constraints, macros, and visibility/field rules. Require reference acceptance:
+/// a fixture becoming invalid must not silently reduce the coverage.
+#[test]
+fn systemverilog_matches_tree_sitter() {
+    check(
+        Grammar::SystemVerilog,
+        "systemverilog",
+        &[
+            include_str!("corpus/systemverilog/parameters.sv"),
+            include_str!("corpus/systemverilog/casts.sv"),
+            include_str!("corpus/systemverilog/generate.sv"),
+            include_str!("corpus/systemverilog/assertions.sv"),
+            include_str!("corpus/systemverilog/constraints.sv"),
+            include_str!("corpus/systemverilog/macro.sv"),
+            include_str!("corpus/systemverilog/stream.sv"),
+            include_str!("corpus/systemverilog/function.sv"),
+            include_str!("corpus/systemverilog/interface.sv"),
+            include_str!("corpus/systemverilog/fork.sv"),
+            include_str!("corpus/systemverilog/unicode.sv"),
+        ],
+    );
 }
 
 /// Point `TF_CORPUS` at a directory to run the same comparison over every `.c`

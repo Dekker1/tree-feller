@@ -1,0 +1,1 @@
+module m; typedef logic [7:0] byte_t; initial begin a = byte_t'(b); a = 8'(b); end endmodule

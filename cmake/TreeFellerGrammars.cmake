@@ -73,11 +73,12 @@ endfunction()
 #   solidity  contextual keywords -- words that are keywords in one position and
 #             identifiers in another. That is the case the keyword re-lex and
 #             tree-sitter's keyword/word fallback exist for.
-#   minizinc  1025 states, 518 dense: the largest, and the one with the most
-#             conflicts (12).
+#   minizinc  1025 states, 518 dense, and 12 declared conflicts.
 #   datazinc  163 states, 2 dense, and exactly one declared conflict -- the
 #             smallest case where the speculative split runs at all.
 #   eprime    a third grammar from the same generator, as a control.
+#   systemverilog  20731 states, 7403 dense, and 636 genuine conflict entries:
+#             a stress case for table expansion and speculative parsing.
 #
 # All are ABI 15 with no external scanner, which is what the driver accepts.
 function(tf_add_grammars)
@@ -97,10 +98,14 @@ function(tf_add_grammars)
     b2383631766367c40f63aff26ef62c0c18d38dec673246dfe749ec5662caf495 minizinc_parser)
   tf_fetch_raw_grammar(eprime "${SHACKLE}/tree-sitter-eprime/src/parser.c"
     eabd6e18fb9feb50b258bc5589012d795713fe4ef860a53297b39bbd991298d4 eprime_parser)
+  # nvim-treesitter's stress grammar: 20,731 states, with no external scanner.
+  tf_fetch_raw_grammar(systemverilog
+    "https://raw.githubusercontent.com/gmlarumbe/tree-sitter-systemverilog/4e7525a777290e341b8a5ad880bd20bb4f291845/src/parser.c"
+    bbd79dce4576990b683173217d8a8b212b5dc0c931348784e0622316bc54c0eb systemverilog_parser)
 
   add_library(tf_grammars STATIC
     "${c_parser}" "${go_parser}" "${regex_parser}" "${solidity_parser}"
-    "${datazinc_parser}" "${minizinc_parser}" "${eprime_parser}")
+    "${datazinc_parser}" "${minizinc_parser}" "${eprime_parser}" "${systemverilog_parser}")
   # The generated parsers include "tree_sitter/parser.h" and are not warning
   # clean; neither is ours to fix.
   target_include_directories(tf_grammars PRIVATE "${PROJECT_SOURCE_DIR}/lib/include/tree_feller")

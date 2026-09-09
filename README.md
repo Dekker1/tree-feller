@@ -169,7 +169,7 @@ For parser, lexer, or visibility changes, compare any corpus with libtree-sitter
 build/tf_diff --grammar c /path/to/c/project
 ```
 
-Files rejected by the grammar are counted separately. The repository fetches seven
+Files rejected by the grammar are counted separately. The repository fetches eight
 hash-pinned ABI-15 grammars; no generated parser is committed. CI tests Linux, macOS,
 Windows, sanitizers, lint, and the packaged crate.
 

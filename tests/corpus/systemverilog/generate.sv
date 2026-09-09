@@ -1,0 +1,1 @@
+module m; for (genvar i=0; i<8; i++) begin: g if (i % 2) begin: odd wire a; end else begin: even wire b; end end endmodule
