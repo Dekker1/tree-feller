@@ -314,13 +314,15 @@ static bool tf_parser__run(const TFLanguage *lang, const void *source, size_t si
                 0) {
           if (self.root.pending) self.nodes[self.root.base].value = tf_parser__flush_root(&self);
           if (capture->failed) goto done;
-          for (uint32_t i = 0; i < self.depth; i++) {
-            uint32_t id = (uint32_t)(uintptr_t)self.nodes[i].value - 1;
-            capture->trees[i].first_child = capture->trees[id].first_child;
-            capture->trees[i].child_count = capture->trees[id].child_count;
-            capture->trees[i].opaque = false;
-          }
+          if (!tf_spec__reserve(capture, (void **)&capture->capture_id, &capture->capture_capacity,
+                                self.depth, sizeof(*capture->capture_id)))
+            goto done;
+          for (uint32_t i = 0; i < self.depth; i++)
+            capture->capture_id[i] = (uint32_t)(uintptr_t)self.nodes[i].value - 1;
           capture->captured = true;
+          // Only the cells the fork has already unrolled need a shape; a later
+          // tf_spec__extend takes its own from capture_id.
+          for (uint32_t k = 0; k < capture->prefix_count; k++) tf_spec__resolve(capture, k);
           ok = true;
           goto done;
         }
