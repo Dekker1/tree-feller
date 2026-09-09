@@ -28,5 +28,13 @@ fn main() {
         "cargo:rerun-if-changed={}",
         root.join("include/tree_feller.h").display()
     );
+    // Internal headers also affect the C objects, including the speculative
+    // parser implementation included by tf_parser.c.
+    for entry in std::fs::read_dir(&src).expect("C source directory") {
+        let path = entry.expect("C source entry").path();
+        if path.extension().is_some_and(|ext| ext == "h") {
+            println!("cargo:rerun-if-changed={}", path.display());
+        }
+    }
     build.compile("tree_feller");
 }

@@ -1,0 +1,1 @@
+function void f(); this.a[i+1].b(); endfunction

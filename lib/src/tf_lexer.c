@@ -39,7 +39,7 @@ static void tf_lexer__get_lookahead(TFLexer *self) {
   self->lookahead_size = (self->data.lookahead == TF_DECODE_ERROR) ? 1 : i;
 }
 
-static void tf_lexer__goto(TFLexer *self, uint32_t byte, TFPoint point) {
+void tf_lexer_seek(TFLexer *self, uint32_t byte, TFPoint point) {
   self->byte = byte;
   self->point = point;
   tf_lexer__get_lookahead(self);
@@ -127,7 +127,7 @@ void tf_lexer_init(TFLexer *self, const TFLanguage *lang, const void *source, ui
 
 // lexer.c:/ts_lexer_start/. tree-sitter decodes only when its lookahead was
 // invalidated by moving between input chunks or included ranges. Neither exists
-// here: only `tf_lexer__goto` and `tf_lexer__do_advance` move the position, and
+// here: only `tf_lexer_seek` and `tf_lexer__do_advance` move the position, and
 // both refresh the lookahead. Avoids one decode per token on the main path and
 // another on every keyword re-lex.
 static void tf_lexer__start(TFLexer *self) {
@@ -148,6 +148,7 @@ bool tf_lexer_next(TFLexer *self, TSStateId state, TFToken *out) {
   const TSLanguage *ts = self->lang->ts;
 
   self->token_is_keyword = false;
+  self->token_lex_state = state;
   tf_lexer__start(self);
   bool found = ts->lex_fn(&self->data, tf_lex_mode(self->lang, state).lex_state);
   tf_lexer__finish(self);
@@ -165,7 +166,7 @@ bool tf_lexer_next(TFLexer *self, TSStateId state, TFToken *out) {
   // has actions, or the state reserves it. The keyword lexer is always called
   // with state 0.
   if (out->symbol == ts->keyword_capture_token && out->symbol != 0) {
-    tf_lexer__goto(self, out->start_byte, out->start_point);
+    tf_lexer_seek(self, out->start_byte, out->start_point);
     tf_lexer__start(self);
     bool is_keyword = ts->keyword_lex_fn(&self->data, 0);
     tf_lexer__finish(self);
@@ -182,6 +183,6 @@ bool tf_lexer_next(TFLexer *self, TSStateId state, TFToken *out) {
   // The keyword lexer may have stopped past the token, and the main lexer may
   // have read lookahead beyond it, so reposition explicitly. tree-sitter does the
   // same, from the parse stack's position (parser.c:531).
-  tf_lexer__goto(self, out->end_byte, out->end_point);
+  tf_lexer_seek(self, out->end_byte, out->end_point);
   return true;
 }

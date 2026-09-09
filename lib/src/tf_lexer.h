@@ -33,6 +33,7 @@ typedef struct {
   // per input byte, and putting a field in the middle of that moved the hot
   // ones across a cache line for a measured 10% loss.
   bool token_is_keyword;
+  TSStateId token_lex_state;
 } TFLexer;
 
 // CONSIDERATION: the source is one contiguous buffer, indexed directly. A pull source
@@ -45,16 +46,18 @@ typedef struct {
 //     Longest token seen: 11 KB over 20,668 .dzn, 67 KB over 7,633 .mzn -- both
 //     block comments, so the bound is "longest comment", not "longest literal".
 //   * During split mode, cover from the earliest live branch's position to the
-//     furthest. Branches advance in lockstep on the earliest token, so that
-//     spread is a token or two, not a region.
+//     furthest. Speculative heads can advance independently. Structural ties
+//     can also require replay from the beginning of the source.
 //   * Byte offsets stay absolute. Everything the sink is handed is an offset
 //     into the whole input, and a consumer that keeps offsets rather than
 //     copying text needs them to keep meaning something.
 //
-// None of this touches the parser: its stack is bounded by nesting depth, not by
-// input size -- 860 cells at the deepest across those same 20,668 files, the
-// largest of which is 61.7 MB.
+// The ordinary parser stack is bounded by nesting depth -- 860 cells at the
+// deepest across those same 20,668 files, the largest of which is 61.7 MB.
+// Speculative structure and private prefix replay can retain more.
 void tf_lexer_init(TFLexer *self, const TFLanguage *lang, const void *source, uint32_t size);
+
+void tf_lexer_seek(TFLexer *self, uint32_t byte, TFPoint point);
 
 // Lex the token that follows, in the given parse state, skipping any leading
 // `extra` characters. Returns false if no token matches, leaving the position at

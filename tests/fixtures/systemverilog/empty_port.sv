@@ -1,0 +1,1 @@
+module m(/*x*/); foo a(); foo b(); endmodule

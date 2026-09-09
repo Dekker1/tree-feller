@@ -1,0 +1,1 @@
+module m; initial a = C::f(); endmodule

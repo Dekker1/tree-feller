@@ -1,7 +1,9 @@
 # tree-feller
 
-Rust bindings for [tree-feller](https://github.com/dekker1/tree-feller): single-pass LR
-parsing with tree-sitter parse tables, without building a tree.
+Rust bindings for [tree-feller](https://github.com/dekker1/tree-feller): LR parsing
+with tree-sitter parse tables, without constructing a public syntax tree.
+Conflicts retain private structural alternatives and can replay a prefix to
+resolve ties; consumer callbacks receive only the selected result.
 
 ```rust
 use tree_feller::{Child, Language, Node};
