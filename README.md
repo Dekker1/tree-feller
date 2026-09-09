@@ -1,10 +1,11 @@
 # tree-feller
 
-Fast, single-pass parsing with tree-sitter grammars for programs that read a file once.
+Fast parsing with tree-sitter grammars for programs that read a file once.
 
 tree-sitter keeps a concrete syntax tree (CST) for incremental editing and error
-recovery. tree-feller instead drives the same generated lexer and parse tables once,
-reports reductions as they finish, and retains only live parser state. It builds no
+recovery. tree-feller drives the same generated lexer and parse tables and reports
+reductions as they finish. Conflicts retain private alternatives and can replay a
+prefix to resolve structural ties. It builds no
 `TSTree` or `TSNode` and stops at the first error.
 
 On a 312 MB MiniZinc data corpus:
@@ -116,8 +117,8 @@ arrive. On failure there is no root, so use `on_discard` to reclaim unconsumed v
 
 `TFVisibleSink` has two optional settings:
 
-- `on_hidden` folds completed hidden runs, keeping memory proportional to nesting depth
-  instead of the widest sibling list. In Rust, implement `Visit::hidden`.
+- `on_hidden` folds completed hidden runs, keeping visible-layer memory proportional
+  to nesting depth instead of the widest sibling list. In Rust, implement `Visit::hidden`.
 - `named_only` omits anonymous leaves with no field, usually punctuation. Anonymous
   tokens that fill a field remain visible.
 
@@ -130,8 +131,9 @@ Parsing stops at the first missing action and reports the valid tokens, for exam
 ```
 
 There is no recovery or `ERROR` node. As in tree-sitter, only `\n` advances the row and
-columns count bytes. Declared conflicts fork value-free branches until one survives;
-more than 4096 live branches is an error.
+columns count bytes. Declared conflicts use value-free graph-structured stacks, with tree-sitter's
+limits and ordering for speculative alternatives. Structural ties can require
+a private replay of the prefix; consumer callbacks run only for the selected tree.
 
 ## Limits
 
@@ -141,6 +143,7 @@ more than 4096 live branches is an error.
 - Inputs must fit in 4 GiB because byte offsets are `uint32_t`.
 - Inputs must be contiguous in memory; `parse_file` memory-maps them.
 - Without `on_hidden`, the visible layer uses memory proportional to the widest sibling list.
+- Speculative alternatives and private prefix replay can use memory beyond nesting depth.
 - A good hand-written parser can be faster. In an AST-for-AST test, tree-feller was
   1.17× slower than Bison, but used 1.2× rather than 16.8× the input memory. PGO closed
   the speed gap.

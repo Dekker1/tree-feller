@@ -128,6 +128,11 @@ fn subject(language: &Language, source: &[u8]) -> Result<Vec<Record>, tree_felle
     }
     let mut out = Vec::with_capacity(records.len());
     flatten(root, &records, &links, &mut out);
+    assert_eq!(
+        records.len(),
+        out.len(),
+        "visitor emitted nodes outside the selected tree"
+    );
     Ok(out)
 }
 
@@ -259,9 +264,108 @@ fn systemverilog_matches_tree_sitter() {
             include_str!("corpus/systemverilog/interface.sv"),
             include_str!("corpus/systemverilog/fork.sv"),
             include_str!("corpus/systemverilog/unicode.sv"),
+            include_str!("corpus/systemverilog/directive_after_repetition.sv"),
+            include_str!("corpus/systemverilog/precedence_pruning.sv"),
         ],
     );
 }
+
+#[test]
+fn systemverilog_deep_and_wide_matches_tree_sitter() {
+    for n in [1, 8, 64, 256] {
+        let parameters = (0..n)
+            .map(|i| format!("P{i}={i}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let cases = [
+            format!(
+                "module m; initial {}a=1; {}endmodule",
+                "begin ".repeat(n),
+                "end ".repeat(n)
+            ),
+            format!("module m; initial a = {}d; endmodule", "b ? c : ".repeat(n)),
+            format!("module m #(parameter {parameters})(); endmodule"),
+            format!(
+                "module m; initial a = {{{}}}; endmodule",
+                vec!["b"; n].join(", ")
+            ),
+            "module m; endmodule\n".repeat(n),
+            format!(
+                "module m; initial a = {}b{}; endmodule",
+                "(".repeat(n),
+                ")".repeat(n)
+            ),
+            format!("module m; initial a = b{}; endmodule", ".c".repeat(n)),
+            format!(
+                "function void f(); {}endfunction",
+                "this.a[i+1].b(); ".repeat(n)
+            ),
+        ];
+        for (i, source) in cases.iter().enumerate() {
+            assert!(compare(
+                Grammar::SystemVerilog,
+                &format!("systemverilog stress {i}, size {n}"),
+                source.as_bytes(),
+            ));
+        }
+    }
+}
+
+// Reduced from the outlier-grammar audit. These assert reference acceptance
+// and tree equality for valid inputs, and rejection for malformed inputs.
+macro_rules! systemverilog_regression {
+    ($name:ident, $fixture:literal, $reason:literal, $valid:expr) => {
+        #[test]
+        #[doc = $reason]
+        fn $name() {
+            assert_eq!(
+                compare(
+                    Grammar::SystemVerilog,
+                    stringify!($name),
+                    include_bytes!($fixture)
+                ),
+                $valid,
+            );
+        }
+    };
+}
+
+systemverilog_regression!(
+    systemverilog_static_call,
+    "fixtures/systemverilog/static_call.sv",
+    "Regression: scoped call loses hierarchical_identifier",
+    true
+);
+systemverilog_regression!(
+    systemverilog_parenthesized_concat,
+    "fixtures/systemverilog/parenthesized_concat.sv",
+    "Regression: identifier becomes tf_call in parenthesized expression",
+    true
+);
+systemverilog_regression!(
+    systemverilog_indexed_method,
+    "fixtures/systemverilog/indexed_method.sv",
+    "Regression: indexed method receiver chooses a different tree",
+    true
+);
+systemverilog_regression!(
+    systemverilog_empty_port,
+    "fixtures/systemverilog/empty_port.sv",
+    "Regression: second instance after an empty module port list",
+    true
+);
+systemverilog_regression!(
+    systemverilog_invalid_range,
+    "fixtures/systemverilog/invalid_range.sv",
+    "Regression: call expression in part-select",
+    false
+);
+systemverilog_regression!(
+    systemverilog_invalid_scope_range,
+    "fixtures/systemverilog/invalid_scope_range.sv",
+    "Regression: scope expression in part-select",
+    false
+);
 
 /// Point `TF_CORPUS` at a directory to run the same comparison over every `.c`
 /// file in it. Left out of the default run so `cargo test` stays hermetic.

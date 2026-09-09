@@ -1,7 +1,8 @@
 //! Streaming LR parsing over tree-sitter parse tables.
 //!
-//! Drives a grammar's generated lexer and parse tables once, reporting nodes as
-//! they finish. It builds no tree and retains only live parser state.
+//! Drives a grammar's generated lexer and parse tables, reporting nodes as they
+//! finish without constructing a public syntax tree. Conflicts retain private
+//! alternatives and can replay a prefix to resolve structural ties.
 //!
 //! Pass the [`tree_sitter_language::LanguageFn`] a grammar crate exports as
 //! `LANGUAGE`:

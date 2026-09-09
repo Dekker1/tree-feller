@@ -1,0 +1,1 @@
+module m; initial a = {(b - c), 1'b0}; endmodule

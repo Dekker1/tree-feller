@@ -215,6 +215,13 @@ if(TF_BUILD_TESTS)
                        "${PROJECT_SOURCE_DIR}/tests/corpus/${grammar}")
     endforeach()
 
+    # Reduced regressions from the outlier-grammar stress audit.
+    foreach(case static_call parenthesized_concat indexed_method empty_port invalid_range invalid_scope_range)
+      add_test(NAME regression_systemverilog_${case}
+               COMMAND tf_diff --grammar systemverilog --expect-failures 0
+                       "${PROJECT_SOURCE_DIR}/tests/fixtures/systemverilog/${case}.sv")
+    endforeach()
+
     # And real C, rather than only what was written to be a test: tree-sitter's
     # own runtime, which has been fetched anyway.
     add_test(NAME sources_c
