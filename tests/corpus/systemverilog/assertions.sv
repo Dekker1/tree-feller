@@ -1,0 +1,1 @@
+module m(input logic clk,a,b); property p; @(posedge clk) disable iff (!a) a |=> ##[1:3] b; endproperty assert property(p); endmodule

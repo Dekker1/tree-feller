@@ -1,0 +1,1 @@
+module m; initial begin a = {<<8{b}}; a = '{default:0}; end endmodule

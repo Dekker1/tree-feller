@@ -1,0 +1,1 @@
+class C; rand int x[]; constraint c { x.size() == 8; foreach (x[i]) x[i] inside {[1:9]}; } endclass

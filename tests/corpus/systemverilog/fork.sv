@@ -1,0 +1,1 @@
+module m; initial begin fork begin #1 a=1; end begin wait(b); a=0; end join_any disable fork; end endmodule
