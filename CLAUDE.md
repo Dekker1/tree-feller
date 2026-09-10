@@ -42,6 +42,20 @@ separately and are not a result about tree-feller.
   zero-length copy from a null pointer passes here and fails there — under UBSan
   *and* under clang-tidy. Pinning the tool version does not make the platforms
   agree; run it in a container instead of pushing to find out.
+- **The sanitizer compiler is load-bearing.** clang 18's UBSan reports
+  `applying zero offset to null pointer`; Apple clang 21 and gcc 13.3 do not.
+  A null-arena `&arena[0]` in `tf_visible.c` survived the whole stress audit
+  because every sanitizer run used one of those two. CI's `Sanitize` job pins
+  `CC: clang` for this reason.
+- **gcc's address sanitizer at `-O0` is ~700x slower than clang's**, because it
+  calls out through the PLT into the shared `libasan` for every access and
+  inlines nothing. `tests/test_utf8.c` does a fixed 285 million decodes: 3 s
+  under clang, 2,562 s under gcc, both passing. `-O1` removes the cliff. The
+  `utf8` test carries a `TIMEOUT` so the cost cannot hide again.
+- **`stdbuf` and a sanitized binary do not mix.** It works by `LD_PRELOAD`, and
+  gcc's shared ASan runtime aborts with "ASan runtime does not come first in
+  initial library list". Use a pty — `script -qec ...` — to get line-buffered
+  progress out of a long sanitizer run.
 - **Field order in `TFLexer` is load-bearing** for the hot loop. Add to the end.
 - **Offering a fold is O(run).** A repetition's run grows by one each reduction, so
   re-offering a symbol after it declined is quadratic. The filter caches the refusal
@@ -117,10 +131,23 @@ that matter:
   under 1% on its own and kept for the memory: peak RSS on the worst MiniZinc
   file in the local corpora went 265 MB -> 173 MB.
 
-Together, against the tree at the point the conflict fixes landed, null-sink over
-directory-sized corpora: -25% (SystemVerilog, 2,902 files), -27% (Go, 1,200),
--39% (Solidity, 240), -18% (MiniZinc, 2,000), -6% (C, 281), -1% (DataZinc,
-122 MB). Peak RSS on the MiniZinc corpus went 270 MB -> 179 MB.
+Three more followed, all in `tf_spec__replay`, which is a third of the time on
+an ambiguity-heavy input: read the arena entry through a pointer instead of
+copying 56 bytes per visited node, descend into the leftmost child directly
+rather than pushing it and popping it straight back, and keep the whole function
+**out of line** — it runs once per split, so the call is free, and inlining it
+grows the function that also holds the ordinary dispatch loop. That last one is
+worth -11% on SystemVerilog on its own. Note that `noinline` on
+`tf_parser__split`, which contains it, measures nothing: the placement matters.
+
+Together, against the tree at the point the conflict fixes landed, null-sink
+over directory-sized corpora: -32.7% (SystemVerilog, 2,902 files), -29.4% (Go,
+1,200), -41.8% (Solidity, 240), -24.5% (MiniZinc, 2,000), -10.5% (C, 281), 0.0%
+(DataZinc, 122 MB). Peak RSS on the MiniZinc corpus went 270 MB -> 179 MB.
+
+DataZinc is the control: it performs 25 splits in 122 MB, so nothing on the
+speculative path can move it. It reads +/-1% between builds of the same source,
+which is the resolution of this harness for two separately linked binaries.
 
 Also measured on the speculative path and reverted: **writing `TFSpecNode` field
 by field** instead of assigning the struct, so the seven unused link slots are
@@ -128,11 +155,13 @@ not cleared — zero, clang already narrows the store, and it leaves the struct
 partly uninitialised for nothing; **packing the replay completion marker** so a
 finished node is not read out of the tree arena a second time — a wash on the
 corpora and 0.4% *slower* on the case it was aimed at, because the postorder
-stack doubles in width; **a multi-entry lexer cache** keyed on (byte, state) —
-an exact repeat within one split happens 0.0% to 0.3% of the time, so there is
-nothing to cache, and reusing a token across *different* states is exactly the
-predicate `tf_spec__lex` already ports from `ts_parser__can_reuse_first_leaf`;
-**marking `tf_parser__split` noinline** — ±0.3%, confirming the earlier reading.
+stack doubles in width; **passing arena entries to `tf_spec__tree` by pointer** —
+nothing, the callee is inlined so there was no copy to remove; **a multi-entry
+lexer cache** keyed on (byte, state) — an exact repeat within one split happens
+0.0% to 0.3% of the time, so there is nothing to cache, and reusing a token
+across *different* states is exactly the predicate `tf_spec__lex` already ports
+from `ts_parser__can_reuse_first_leaf`; **marking `tf_parser__split` noinline** —
+±0.3%, where marking `tf_spec__replay` alone is worth -11%.
 
 What is left is inherent to replaying a decision. A grammar conflict that cannot
 be resolved until the end of a construct keeps the split alive for the whole
@@ -140,7 +169,7 @@ construct, and everything in it is built speculatively and then replayed: about
 twice the work, and speculative state proportional to the construct rather than
 to nesting depth. MiniZinc's array literal is the clearest case -- `v = [...]`
 forks at the `[` and cannot settle until the `]` -- so an 800 KB `.mzn` array
-runs at 6.8 MB/s and 300 bytes of parser state per input byte, against 70 MB/s
+runs at 7.7 MB/s and 300 bytes of parser state per input byte, against 70 MB/s
 and a couple of megabytes for the same data as `.dzn`, which has no such
 conflict. Both time and memory are linear in the construct, not quadratic, and
 the branch that shipped the conflict fixes was 5.4 MB/s and 480 bytes per byte,

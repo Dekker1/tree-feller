@@ -104,9 +104,18 @@ jobs:
             | xargs clang-tidy -p build --warnings-as-errors='*'
 
   # The whole suite again, under sanitizers.
+  #
+  # clang rather than the runner's default gcc, and still at -O0. gcc's address
+  # sanitizer at -O0 emits an out-of-line call through the PLT into the shared
+  # libasan for every instrumented access and inlines nothing, which takes the
+  # exhaustive UTF-8 test from 12 s to 2,562 s -- measured, both passing. Raising
+  # the optimization level fixes it too (0.9 s), at the cost of the redzones
+  # around locals the optimizer promotes, so the compiler is the thing to change.
   sanitize:
     name: Sanitize
     runs-on: ubuntu-latest
+    env:
+      CC: clang
     strategy:
       fail-fast: false
       matrix:
