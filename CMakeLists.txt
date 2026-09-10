@@ -166,6 +166,11 @@ if(TF_BUILD_TESTS)
   target_link_libraries(test_utf8 PRIVATE tree_feller)
   target_include_directories(test_utf8 PRIVATE lib/src ${tree-sitter_SOURCE_DIR}/lib/src)
   add_test(NAME utf8 COMMAND test_utf8)
+  # A fixed 285 million sequences, so the runtime is predictable: 3 s in Release,
+  # 4 s under clang's address sanitizer at -O0. The bound is here because gcc's
+  # address sanitizer at -O0 takes 2,562 s for the same work -- it passes, so
+  # without a bound the cost is invisible. See the Sanitize job in CI.
+  set_tests_properties(utf8 PROPERTIES TIMEOUT 600)
 
   # The public C surface, walked from C. Behaviour lives in the Rust tests; this
   # is here so that using the library from C stays a tested configuration.

@@ -34,6 +34,15 @@
 #define TF_SPEC_ITERATORS 64
 #define TF_SPEC_VERSIONS 6
 
+// For the one function below that has to stay out of line. Not portability
+// boilerplate: its single use is a measurement, and a compiler without the
+// attribute simply inlines as before.
+#if defined(__GNUC__) || defined(__clang__)
+#define TF_NOINLINE __attribute__((noinline))
+#else
+#define TF_NOINLINE
+#endif
+
 // Ordered so the small fields fill the hole ahead of `precedence`: 56 bytes
 // rather than 64, over an arena that is one entry per speculative shift and
 // reduction. `structural_count` is a production's child count, which the ABI
@@ -390,13 +399,13 @@ static uint32_t tf_spec__parent(TFSpec *s, TSSymbol symbol, uint16_t production,
                      .structural_count = structural,
                      .production_id = production};
   if (count) {
-    TFSpecTree left = s->trees[s->children[first]],
-               right = s->trees[s->children[first + count - 1]];
-    tree.token.start_byte = left.token.start_byte;
-    tree.token.start_point = left.token.start_point;
-    tree.token.end_byte = right.token.end_byte;
-    tree.token.end_point = right.token.end_point;
-    tree.padding_start = left.padding_start;
+    const TFSpecTree *left = &s->trees[s->children[first]];
+    const TFSpecTree *right = &s->trees[s->children[first + count - 1]];
+    tree.token.start_byte = left->token.start_byte;
+    tree.token.start_point = left->token.start_point;
+    tree.token.end_byte = right->token.end_byte;
+    tree.token.end_point = right->token.end_point;
+    tree.padding_start = left->padding_start;
     for (uint32_t i = 0; i < count; i++)
       tree.precedence += s->trees[s->children[first + i]].precedence;
   }
@@ -742,30 +751,49 @@ static bool tf_spec__unique(const TFSpec *s, uint32_t node) {
 
 // A selected forest is replayed in postorder. Inherited cells are already on
 // the real stack, so only speculative shifts and reductions reach the sink.
-static bool tf_spec__replay(TFSpec *s, TFParser *p, uint32_t first, uint32_t count) {
+// Out of line on purpose. It runs once per split, so the call costs nothing, and
+// inlining it grows the function that also holds the ordinary dispatch loop:
+// keeping it out is worth -10% on SystemVerilog by itself. `noinline` on
+// `tf_parser__split`, which contains it, measures nothing -- the placement is
+// what matters.
+TF_NOINLINE static bool tf_spec__replay(TFSpec *s, TFParser *p, uint32_t first, uint32_t count) {
   s->scratch_count = 0;
   if (!TF_SPEC_RESERVE(s, scratch, scratch_capacity, count)) return false;
   for (uint32_t i = count; i > 0; i--) s->scratch[s->scratch_count++] = s->children[first + i - 1];
   while (s->scratch_count) {
-    uint32_t id = s->scratch[--s->scratch_count];
-    bool finish = (id & 0x80000000U) != 0;
-    id &= 0x7fffffffU;
-    TFSpecTree tree = s->trees[id];
-    if (tree.inherited) continue;
-    if (finish) {
-      if (!tf_parser__reduce(p, tree.token.symbol, tree.structural_count, tree.production_id))
-        return false;
-    } else if (tree.leaf) {
-      TSStateId state = p->states[p->depth];
-      if (!tf_parser__shift(p, &tree.token, tree.extra,
-                            tree.extra ? state : tf_next_state(p->lang, state, tree.token.symbol)))
-        return false;
-    } else {
-      if (!TF_SPEC_RESERVE(s, scratch, scratch_capacity, s->scratch_count + tree.child_count + 1))
-        return false;
-      s->scratch[s->scratch_count++] = id | 0x80000000U;
-      for (uint32_t i = tree.child_count; i > 0; i--)
-        s->scratch[s->scratch_count++] = s->children[tree.first_child + i - 1];
+    uint32_t item = s->scratch[--s->scratch_count];
+    // Descend into the leftmost child directly instead of pushing it and popping
+    // it straight back: a left-recursive repetition is one such step per element.
+    for (;;) {
+      if (item & 0x80000000U) {
+        const TFSpecTree *done = &s->trees[item & 0x7fffffffU];
+        if (!tf_parser__reduce(p, done->token.symbol, done->structural_count, done->production_id))
+          return false;
+        break;
+      }
+      // Read through the arena rather than copying the entry: each branch below
+      // wants a different handful of its fields.
+      const TFSpecTree *tree = &s->trees[item];
+      if (tree->inherited) break;
+      if (tree->leaf) {
+        TSStateId state = p->states[p->depth];
+        TFToken token = tree->token;
+        bool extra = tree->extra;
+        if (!tf_parser__shift(p, &token, extra,
+                              extra ? state : tf_next_state(p->lang, state, token.symbol)))
+          return false;
+        break;
+      }
+      uint32_t children = tree->child_count, at = tree->first_child;
+      if (children == 0) {
+        item |= 0x80000000U;
+        continue;
+      }
+      if (!TF_SPEC_RESERVE(s, scratch, scratch_capacity, s->scratch_count + children)) return false;
+      s->scratch[s->scratch_count++] = item | 0x80000000U;
+      for (uint32_t i = children; i > 1; i--)
+        s->scratch[s->scratch_count++] = s->children[at + i - 1];
+      item = s->children[at];
     }
   }
   return true;

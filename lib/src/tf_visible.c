@@ -118,6 +118,24 @@ static void *tf_filter__store_cell(TFFilter *self, uint32_t children, uint16_t p
 #endif
 }
 
+// The run of settled entries at `position`, as the sink sees it.
+//
+// A node with no visible children is reported before the arena has ever been
+// allocated -- the very first reduction of a parse, if its children are all
+// hidden -- and `&arena[0]` on a null arena is undefined. clang 18's
+// UndefinedBehaviorSanitizer calls it "applying zero offset to null pointer";
+// Apple clang and gcc do not report it, which is why it stood for so long.
+//
+// It stands in for an empty run rather than a null because `children` is
+// documented as a pointer to `child_count` entries: a null would be a licence
+// for `memcpy(dst, node->children, 0)` in a consumer to be undefined in turn,
+// and Rust's `slice::from_raw_parts` requires non-null even for an empty slice.
+static const TFVisibleChild tf_filter__no_children;
+
+static const TFVisibleChild *tf_filter__run(const TFFilter *self, uint32_t position) {
+  return self->arena ? &self->arena[position] : &tf_filter__no_children;
+}
+
 static bool tf_filter__reserve(TFVisibleChild **array, uint32_t *capacity, uint32_t needed) {
   if (needed <= *capacity) return true;
   uint32_t next = *capacity ? *capacity : 64;
@@ -200,7 +218,7 @@ static void *tf_filter__on_reduce(void *payload, const TFReduction *reduction) {
           .start_point = child->start_point,
           .end_point = child->end_point,
           .child_count = owns,
-          .children = &self->arena[position],
+          .children = tf_filter__run(self, position),
       };
       if (!tf_filter__reserve(&self->scratch, &self->scratch_capacity, produced + 1)) {
         self->failed = true;
@@ -258,7 +276,7 @@ static void *tf_filter__on_reduce(void *payload, const TFReduction *reduction) {
         .start_point = reduction->start_point,
         .end_point = reduction->end_point,
         .child_count = owned,
-        .children = &self->arena[base],
+        .children = tf_filter__run(self, base),
     };
     void *folded = self->sink->on_hidden(self->sink->payload, &node);
     if (!folded) {
@@ -319,7 +337,7 @@ bool tf_parse_visible(const TFLanguage *lang, const void *source, size_t size,
           .start_point = self.root_start_point,
           .end_point = self.root_end_point,
           .child_count = owns,
-          .children = &self.arena[self.arena_len - owns],
+          .children = tf_filter__run(&self, self.arena_len - owns),
       };
       value = self.sink->on_node(self.sink->payload, &node);
     }
