@@ -154,10 +154,16 @@ static void *tf_parser__flush_root(TFParser *self) {
 // hands them to the sink, and pushes the result in their place.
 static bool tf_parser__reduce(TFParser *self, TSSymbol symbol, uint32_t child_count,
                               uint16_t production_id) {
-  uint32_t popped = 0;
+  // The extras above the last real child are exactly the run this scan crosses
+  // before it reaches one, so counting them here saves walking the top of the
+  // stack a second time.
+  uint32_t popped = 0, trailing_count = 0;
   for (uint32_t structural = 0; structural < child_count;) {
     popped++;
-    if (!self->nodes[self->depth - popped].extra) structural++;
+    if (!self->nodes[self->depth - popped].extra)
+      structural++;
+    else if (structural == 0)
+      trailing_count++;
   }
   uint32_t base = self->depth - popped;
 
@@ -167,9 +173,7 @@ static bool tf_parser__reduce(TFParser *self, TSSymbol symbol, uint32_t child_co
     self->nodes[self->root.base].value = tf_parser__flush_root(self);
   }
 
-  uint32_t end = self->depth;
-  while (end > base && self->nodes[end - 1].extra) end--;
-  uint32_t trailing_count = self->depth - end;
+  uint32_t end = self->depth - trailing_count;
 
   TFReduction reduction = {
       .symbol = symbol,

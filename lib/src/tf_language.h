@@ -24,8 +24,11 @@ struct TFLanguage {
   const uint8_t *action_counts;
   uint32_t action_entry_count;
   // `production_id * field_at_width + child_index` -> the field that child fills
-  // directly, or 0. Flattens the per-production field map, which is otherwise a
-  // list to be scanned once per child. See tf_language.c.
+  // directly, or 0, for a `child_index` below `field_at_width`. Flattens the
+  // per-production field map, which is otherwise a list to be scanned once per
+  // child (tree_cursor.c:682). `inherited` entries describe fields further down
+  // and are left out; a hidden child's own entries keep the field they already
+  // resolved to. See tf_language.c.
   const TSFieldId *field_at;
   uint32_t field_at_width;
   // One byte per symbol: whether any production aliases it, so a hidden symbol
@@ -164,15 +167,6 @@ static inline bool tf_is_reserved_word(const TFLanguage *self, TSStateId state, 
     if (ts->reserved_words[i] == 0) break;
   }
   return false;
-}
-
-// tree_cursor.c:682. The field a child at this structural index fills directly.
-// `inherited` entries describe fields further down and are not part of this; a
-// hidden child's own entries keep whatever field they already resolved to.
-static inline TSFieldId tf_field_at(const TFLanguage *self, uint16_t production_id,
-                                    uint32_t index) {
-  if (index >= self->field_at_width) return 0;
-  return self->field_at[(size_t)production_id * self->field_at_width + index];
 }
 
 // A hidden rule whose children a consumer may fold: hidden by its own metadata,
