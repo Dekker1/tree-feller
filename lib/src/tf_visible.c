@@ -159,7 +159,18 @@ static void *tf_filter__on_reduce(void *payload, const TFReduction *reduction) {
   TFFilter *self = payload;
   if (self->failed) return NULL;
   const TFLanguage *lang = self->lang;
+  const TSLanguage *ts = lang->ts;
   uint16_t production_id = reduction->production_id;
+
+  // The alias and field rows for this production, resolved once. The sink's
+  // callbacks are opaque, so every `lang->...` load inside the loops below is
+  // otherwise repeated after each one -- five chained loads per child.
+  const TSSymbol *alias_row =
+      production_id ? &ts->alias_sequences[(size_t)production_id * ts->max_alias_sequence_length]
+                    : NULL;
+  uint32_t field_width = lang->field_at_width;
+  const TSFieldId *field_row =
+      field_width ? &lang->field_at[(size_t)production_id * field_width] : NULL;
 
   uint32_t total = 0;
   for (uint32_t i = 0; i < reduction->node_count; i++) {
@@ -175,9 +186,10 @@ static void *tf_filter__on_reduce(void *payload, const TFReduction *reduction) {
   for (; index < reduction->node_count; index++) {
     const TFNode *child = &reduction->children[index];
     uint32_t owns = tf_filter__cell(self, child->value).children;
-    TSSymbol alias = child->extra ? 0 : tf_alias_at(lang, production_id, structural);
+    TSSymbol alias = (alias_row && !child->extra) ? alias_row[structural] : 0;
     if (alias || tf_symbol_metadata(lang, child->symbol).visible) break;
-    TSFieldId field = child->extra ? 0 : tf_field_at(lang, production_id, structural);
+    TSFieldId field =
+        (field_row && !child->extra && structural < field_width) ? field_row[structural] : 0;
     if (field) {
       for (uint32_t i = 0; i < owns; i++) {
         TFVisibleChild *entry = &self->arena[position + i];
@@ -196,9 +208,10 @@ static void *tf_filter__on_reduce(void *payload, const TFReduction *reduction) {
     const TFNode *child = &reduction->children[index];
     TFVisibleCell cell = tf_filter__cell(self, child->value);
     uint32_t owns = cell.children;
-    TSSymbol alias = child->extra ? 0 : tf_alias_at(lang, production_id, structural);
+    TSSymbol alias = (alias_row && !child->extra) ? alias_row[structural] : 0;
     TSSymbolMetadata metadata = tf_symbol_metadata(lang, child->symbol);
-    TSFieldId field = child->extra ? 0 : tf_field_at(lang, production_id, structural);
+    TSFieldId field =
+        (field_row && !child->extra && structural < field_width) ? field_row[structural] : 0;
 
     if (alias || metadata.visible) {
       bool named = alias ? tf_symbol_metadata(lang, alias).named : metadata.named;
@@ -235,12 +248,18 @@ static void *tf_filter__on_reduce(void *payload, const TFReduction *reduction) {
         self->failed = true;
         return NULL;
       }
-      for (uint32_t i = 0; i < owns; i++) {
-        TFVisibleChild entry = self->arena[position + i];
-        // tree_cursor.c:672 stops the walk at an extra, so an extra never picks
-        // up a field from a hidden ancestor.
-        if (!entry.extra && !entry.field_id) entry.field_id = field;
-        self->scratch[produced++] = entry;
+      // tree_cursor.c:672 stops the walk at an extra, so an extra never picks
+      // up a field from a hidden ancestor -- and with no field to apply there is
+      // nothing to inspect, so the run moves as a block.
+      if (field) {
+        for (uint32_t i = 0; i < owns; i++) {
+          TFVisibleChild entry = self->arena[position + i];
+          if (!entry.extra && !entry.field_id) entry.field_id = field;
+          self->scratch[produced++] = entry;
+        }
+      } else if (owns > 0) {
+        memcpy(&self->scratch[produced], &self->arena[position], owns * sizeof(TFVisibleChild));
+        produced += owns;
       }
     }
 
@@ -256,7 +275,13 @@ static void *tf_filter__on_reduce(void *payload, const TFReduction *reduction) {
       self->failed = true;
       return NULL;
     }
-    memcpy(&self->arena[settled], self->scratch, produced * sizeof(TFVisibleChild));
+    // One entry is the overwhelmingly common case -- a node with children takes
+    // their place -- and it is a 16-byte store, not a call into memmove.
+    if (produced == 1) {
+      self->arena[settled] = self->scratch[0];
+    } else {
+      memcpy(&self->arena[settled], self->scratch, produced * sizeof(TFVisibleChild));
+    }
   }
   self->arena_len = settled + produced;
 
