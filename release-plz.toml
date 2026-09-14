@@ -1,0 +1,10 @@
+[[package]]
+name = "tree-feller"
+git_tag_name = "v{{ version }}"
+# At the root rather than beside lib/Cargo.toml.
+changelog_path = "CHANGELOG.md"
+
+[[package]]
+name = "tf-bench"
+release = false
+publish = false

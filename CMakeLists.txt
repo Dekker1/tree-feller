@@ -1,6 +1,11 @@
 cmake_minimum_required(VERSION 3.20)
+
+# The version lives in the workspace Cargo.toml, which release-plz bumps.
+file(STRINGS "${CMAKE_CURRENT_LIST_DIR}/Cargo.toml" tf_version REGEX "^version = ")
+string(REGEX REPLACE "^version = \"([^\"]+)\".*" "\\1" tf_version "${tf_version}")
+
 project(tree_feller
-  VERSION 0.1.0
+  VERSION ${tf_version}
   DESCRIPTION "Streaming LR parsing over tree-sitter parse tables, without building a tree"
   HOMEPAGE_URL "https://github.com/dekker1/tree-feller"
   LANGUAGES C)
