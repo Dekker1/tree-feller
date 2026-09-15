@@ -109,7 +109,6 @@ bool tf_parse(const TFLanguage *lang, const void *source, size_t size, const TFS
 typedef struct {
   const void *data;
   uint32_t size;
-  bool mapped;  // internal
 } TFFile;
 
 // Maps a file without committing it all to memory. Fails above the 4 GiB

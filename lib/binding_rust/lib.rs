@@ -542,7 +542,6 @@ impl Language {
         let mut file = ffi::TFFile {
             data: std::ptr::null(),
             size: 0,
-            mapped: false,
         };
         let mut error = ffi::TFError::default();
         if !unsafe { ffi::tf_file_open(&mut file, text.as_ptr(), &mut error) } {

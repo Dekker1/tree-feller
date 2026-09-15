@@ -41,13 +41,11 @@ impl Default for TFError {
     }
 }
 
-/// A memory-mapped source file. `mapped` records whether `data` needs
-/// unmapping on close; not meaningful to a caller.
+/// A memory-mapped source file.
 #[repr(C)]
 pub struct TFFile {
     pub data: *const c_void,
     pub size: u32,
-    pub mapped: bool,
 }
 
 /// One child of a [`TFVisibleNode`]: its symbol, the field it fills in the

@@ -74,7 +74,6 @@ bool tf_file_open(TFFile *self, const char *path, TFError *error) {
     return tf_file__fail(error, path, "cannot map", why);
   }
   self->data = data;
-  self->mapped = true;
   return true;
 #else
   int fd = open(path, O_RDONLY);
@@ -107,13 +106,14 @@ bool tf_file_open(TFFile *self, const char *path, TFError *error) {
     return tf_file__fail(error, path, "cannot map", strerror(saved));
   }
   self->data = data;
-  self->mapped = true;
   return true;
 #endif
 }
 
 void tf_file_close(TFFile *self) {
-  if (self->mapped) {
+  // An empty file is "" and was never mapped; a failed map leaves `size` set but
+  // no `data`.
+  if (self->size > 0 && self->data) {
 #ifdef _WIN32
     UnmapViewOfFile(self->data);
 #else
