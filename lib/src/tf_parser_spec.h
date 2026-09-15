@@ -783,7 +783,29 @@ TF_NOINLINE static bool tf_spec__replay(TFSpec *s, TFParser *p, uint32_t first, 
   return true;
 }
 
+// A private replay reaching the owner's fork: record the shapes of the cells
+// below it and stop. True if this is the fork, whether or not recording worked.
+static bool tf_spec__capture(TFSpec *c, TFParser *p, const TFToken *token) {
+  const TFParser *owner = c->owner;
+  if (p->split_count != owner->split_count || token->start_byte != c->fork_byte ||
+      p->depth != owner->depth ||
+      memcmp(p->states, owner->states, (p->depth + 1) * sizeof(TSStateId)) != 0)
+    return false;
+  if (p->root.pending) p->nodes[p->root.base].value = tf_parser__flush_root(p);
+  if (!TF_SPEC_RESERVE(c, capture_id, capture_capacity, p->depth)) return true;
+  for (uint32_t i = 0; i < p->depth; i++)
+    c->capture_id[i] = (uint32_t)(uintptr_t)p->nodes[i].value - 1;
+  c->captured = true;
+  // Only the cells the fork has already unrolled need a shape; a later
+  // tf_spec__extend takes its own from capture_id.
+  for (uint32_t k = 0; k < c->prefix_count; k++) tf_spec__resolve(c, k);
+  return true;
+}
+
 static bool tf_parser__split(TFParser *p, TFToken token, TFToken *next) {
+  p->split_count++;
+  // A replay whose collector ran out of memory has nothing left to find.
+  if (p->capture && (p->capture->failed || tf_spec__capture(p->capture, p, &token))) return false;
   if (!p->spec) {
     p->spec = calloc(1, sizeof(TFSpec));
     if (!p->spec) goto oom;

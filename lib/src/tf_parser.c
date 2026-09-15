@@ -41,6 +41,8 @@ typedef struct {
   TFError *error;
   uint32_t split_count;
   TFSpec *spec;
+  // Set on a private replay, which stops at this split's fork; see tf_spec__capture.
+  TFSpec *capture;
 } TFParser;
 
 static bool tf_parser__grow(TFParser *self, uint32_t needed) {
@@ -249,7 +251,8 @@ static bool tf_parser__demote_keyword(const TFLanguage *lang, TSStateId state, T
 static bool tf_parser__run(const TFLanguage *lang, const void *source, size_t size,
                            const TFSink *sink, void **root, TFError *error, TFSpec *capture) {
   static const TFSink no_sink = {0};
-  TFParser self = {.lang = lang, .sink = sink ? sink : &no_sink, .error = error};
+  TFParser self = {
+      .lang = lang, .sink = sink ? sink : &no_sink, .error = error, .capture = capture};
   if (error) *error = (TFError){0};
   if (root) *root = NULL;
   if (size > UINT32_MAX) {
@@ -268,7 +271,6 @@ static bool tf_parser__run(const TFLanguage *lang, const void *source, size_t si
   self.states[0] = 1;
 
   for (;;) {
-    if (capture && capture->failed) goto done;
     TSStateId state = self.states[self.depth];
     TFToken token;
     if (!tf_lexer_next(&self.lexer, state, &token)) {
@@ -288,23 +290,6 @@ static bool tf_parser__run(const TFLanguage *lang, const void *source, size_t si
         goto done;
       }
       if (count > 1) {
-        self.split_count++;
-        if (capture && self.split_count == capture->owner->split_count &&
-            token.start_byte == capture->fork_byte && self.depth == capture->owner->depth &&
-            memcmp(self.states, capture->owner->states, (self.depth + 1) * sizeof(TSStateId)) ==
-                0) {
-          if (self.root.pending) self.nodes[self.root.base].value = tf_parser__flush_root(&self);
-          if (capture->failed) goto done;
-          if (!TF_SPEC_RESERVE(capture, capture_id, capture_capacity, self.depth)) goto done;
-          for (uint32_t i = 0; i < self.depth; i++)
-            capture->capture_id[i] = (uint32_t)(uintptr_t)self.nodes[i].value - 1;
-          capture->captured = true;
-          // Only the cells the fork has already unrolled need a shape; a later
-          // tf_spec__extend takes its own from capture_id.
-          for (uint32_t k = 0; k < capture->prefix_count; k++) tf_spec__resolve(capture, k);
-          ok = true;
-          goto done;
-        }
         // The tables cannot decide here; work it out speculatively and replay.
         if (!tf_parser__split(&self, token, &token)) goto done;
         state = self.states[self.depth];
@@ -439,10 +424,10 @@ static bool tf_spec__materialize(TFSpec *s) {
   if (!s->materialized) {
     s->materialized = true;
     TFSink sink = {.payload = s, .on_shift = tf_capture__shift, .on_reduce = tf_capture__reduce};
-    if (!tf_parser__run(s->owner->lang, s->owner->lexer.source, s->owner->lexer.size, &sink, NULL,
-                        NULL, s) ||
-        !s->captured)
-      s->failed = true;
+    // The replay stops by failing once it has captured, so only `captured` counts.
+    (void)tf_parser__run(s->owner->lang, s->owner->lexer.source, s->owner->lexer.size, &sink, NULL,
+                         NULL, s);
+    if (!s->captured) s->failed = true;
   }
   return !s->failed;
 }
