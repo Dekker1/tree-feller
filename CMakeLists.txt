@@ -31,13 +31,14 @@ include(GNUInstallDirs)
 # No dependencies beyond a C11 compiler. A consumer compiles its own generated
 # parser.c and links it against this.
 
-add_library(tree_feller
+set(tf_sources
   lib/src/tf_file.c
   lib/src/tf_language.c
   lib/src/tf_lexer.c
   lib/src/tf_parser.c
-  lib/src/tf_visible.c
-)
+  lib/src/tf_visible.c)
+
+add_library(tree_feller ${tf_sources})
 add_library(tree_feller::tree_feller ALIAS tree_feller)
 
 target_include_directories(tree_feller
@@ -46,8 +47,7 @@ target_include_directories(tree_feller
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 
   PRIVATE
-    lib/src
-    lib/include/tree_feller)
+    lib/src)
 # For compiling a consumer's own generated parser.c, which includes
 # "tree_sitter/parser.h". That header is installed under `tree_feller/` so that
 # it cannot shadow the copy shipping with a grammar, which means it is not on
@@ -112,8 +112,9 @@ endif()
 # Tests
 #
 # Benchmarks live in `crates/tf-bench` and are run with cargo; what is left
-# here is what cannot be done from Rust. Everything below needs grammars, and the differential tests need libtree-sitter
-# to compare against. Both are fetched; neither is required to use the library.
+# here is what cannot be done from Rust. Everything below needs grammars, and
+# the differential tests need libtree-sitter to compare against. Both are
+# fetched; neither is required to use the library.
 
 if(TF_BUILD_TESTS)
   include(${PROJECT_SOURCE_DIR}/cmake/TreeFellerGrammars.cmake)
@@ -150,9 +151,7 @@ if(TF_BUILD_TESTS)
   add_library(tf_testing INTERFACE)
   target_link_libraries(tf_testing INTERFACE tree_feller tf_grammars)
   target_include_directories(tf_testing INTERFACE tests)
-endif()
 
-if(TF_BUILD_TESTS)
   enable_testing()
 
   # Every state x every symbol against libtree-sitter's own accessors, for every
@@ -171,10 +170,7 @@ if(TF_BUILD_TESTS)
   target_link_libraries(test_utf8 PRIVATE tree_feller)
   target_include_directories(test_utf8 PRIVATE lib/src ${tree-sitter_SOURCE_DIR}/lib/src)
   add_test(NAME utf8 COMMAND test_utf8)
-  # A fixed 285 million sequences, so the runtime is predictable: 3 s in Release,
-  # 4 s under clang's address sanitizer at -O0. The bound is here because gcc's
-  # address sanitizer at -O0 takes 2,562 s for the same work -- it passes, so
-  # without a bound the cost is invisible. See the Sanitize job in CI.
+  # Bounded so gcc's slow -O0 address sanitizer cannot hide; see CLAUDE.md.
   set_tests_properties(utf8 PROPERTIES TIMEOUT 600)
 
   # The public C surface, walked from C. Behaviour lives in the Rust tests; this
@@ -186,16 +182,11 @@ if(TF_BUILD_TESTS)
   # Exercise the 32-bit visible-cell representation on every test host. A real
   # 32-bit target selects this path from UINTPTR_MAX; the define only makes it
   # practical to run the same code on the usual 64-bit CI machines.
-  add_library(tree_feller_32bit_cells STATIC
-    lib/src/tf_file.c
-    lib/src/tf_language.c
-    lib/src/tf_lexer.c
-    lib/src/tf_parser.c
-    lib/src/tf_visible.c)
+  add_library(tree_feller_32bit_cells STATIC ${tf_sources})
   target_compile_definitions(tree_feller_32bit_cells PRIVATE TF_VISIBLE_FORCE_CELL_ARENA=1)
   target_include_directories(tree_feller_32bit_cells
     PUBLIC lib/include
-    PRIVATE lib/src lib/include/tree_feller)
+    PRIVATE lib/src)
   add_executable(test_c_api_32bit_cells tests/test_c_api.c)
   target_link_libraries(test_c_api_32bit_cells PRIVATE tree_feller_32bit_cells tf_grammars)
   target_include_directories(test_c_api_32bit_cells PRIVATE tests)
@@ -214,22 +205,21 @@ if(TF_BUILD_TESTS)
     # A corpus per grammar, in this repository, compared node for node against a
     # walk of the tree libtree-sitter builds. Pinned to an exact count rather than
     # "no failures", so a regression shows up and a fix does too.
-    #
-    foreach(grammar c go regex solidity datazinc minizinc eprime systemverilog)
-      if(NOT DEFINED corpus_failures_${grammar})
-        set(corpus_failures_${grammar} 0)
-      endif()
+    file(GLOB tf_corpora LIST_DIRECTORIES true CONFIGURE_DEPENDS
+         RELATIVE "${PROJECT_SOURCE_DIR}/tests/corpus" "${PROJECT_SOURCE_DIR}/tests/corpus/*")
+    foreach(grammar ${tf_corpora})
       add_test(NAME corpus_${grammar}
-               COMMAND tf_diff --grammar ${grammar}
-                       --expect-failures ${corpus_failures_${grammar}}
+               COMMAND tf_diff --grammar ${grammar} --expect-failures 0
                        "${PROJECT_SOURCE_DIR}/tests/corpus/${grammar}")
     endforeach()
 
     # Reduced regressions from the outlier-grammar stress audit.
-    foreach(case static_call parenthesized_concat indexed_method empty_port invalid_range invalid_scope_range pragma_eof line_eof clocking_expect)
+    file(GLOB tf_sv_fixtures CONFIGURE_DEPENDS
+         "${PROJECT_SOURCE_DIR}/tests/fixtures/systemverilog/*.sv")
+    foreach(fixture ${tf_sv_fixtures})
+      get_filename_component(case "${fixture}" NAME_WE)
       add_test(NAME regression_systemverilog_${case}
-               COMMAND tf_diff --grammar systemverilog --expect-failures 0
-                       "${PROJECT_SOURCE_DIR}/tests/fixtures/systemverilog/${case}.sv")
+               COMMAND tf_diff --grammar systemverilog --expect-failures 0 "${fixture}")
     endforeach()
 
     # And real C, rather than only what was written to be a test: tree-sitter's
@@ -237,12 +227,12 @@ if(TF_BUILD_TESTS)
     add_test(NAME sources_c
              COMMAND tf_diff --grammar c --expect-failures 0 "${tree-sitter_SOURCE_DIR}/lib/src")
 
-  # The grammars' own tree-sitter test corpora, if a checkout is around. Not
-  # fetched: unlike parser.c they are not what tree-feller is coupled to, and
-  # they are only published in the grammar repositories, not in the crates.
-  set(TF_GRAMMAR_REPO "" CACHE PATH
-      "Checkout of shackle-rs/shackle/parsers, for the grammars' own corpora")
-  foreach(grammar datazinc eprime minizinc)
+    # The grammars' own tree-sitter test corpora, if a checkout is around. Not
+    # fetched: unlike parser.c they are not what tree-feller is coupled to, and
+    # they are only published in the grammar repositories, not in the crates.
+    set(TF_GRAMMAR_REPO "" CACHE PATH
+        "Checkout of shackle-rs/shackle/parsers, for the grammars' own corpora")
+    foreach(grammar datazinc eprime minizinc)
       if(TF_GRAMMAR_REPO AND EXISTS "${TF_GRAMMAR_REPO}/tree-sitter-${grammar}/test/corpus")
         add_test(NAME upstream_corpus_${grammar}
                  COMMAND tf_diff --grammar ${grammar} --corpus --expect-failures 0

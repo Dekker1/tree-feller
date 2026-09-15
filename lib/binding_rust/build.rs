@@ -7,10 +7,14 @@ fn main() {
     let root = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     let src = root.join("src");
 
+    // Directories are scanned recursively, so this covers every source and
+    // header, including the internal ones tf_parser.c includes.
+    println!("cargo:rerun-if-changed={}", src.display());
+    println!("cargo:rerun-if-changed={}", root.join("include").display());
+
     let mut build = cc::Build::new();
     build
         .include(root.join("include"))
-        .include(root.join("include/tree_feller"))
         .flag_if_supported("-std=c11")
         .warnings(true);
     for name in [
@@ -20,21 +24,7 @@ fn main() {
         "tf_parser.c",
         "tf_visible.c",
     ] {
-        let path = src.join(name);
-        println!("cargo:rerun-if-changed={}", path.display());
-        build.file(path);
-    }
-    println!(
-        "cargo:rerun-if-changed={}",
-        root.join("include/tree_feller.h").display()
-    );
-    // Internal headers also affect the C objects, including the speculative
-    // parser implementation included by tf_parser.c.
-    for entry in std::fs::read_dir(&src).expect("C source directory") {
-        let path = entry.expect("C source entry").path();
-        if path.extension().is_some_and(|ext| ext == "h") {
-            println!("cargo:rerun-if-changed={}", path.display());
-        }
+        build.file(src.join(name));
     }
     build.compile("tree_feller");
 }

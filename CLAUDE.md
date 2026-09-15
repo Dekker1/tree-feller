@@ -203,8 +203,8 @@ and `tf_diff.c` need tree-sitter's private headers for table entries and product
 ids, `test_lexer.c` needs `ts_subtree_parse_state`, `test_utf8.c` needs ICU's
 `U8_NEXT`. `test_c_api.c` exists so that using the library from C stays tested.
 
-Adding a grammar also needs an entry in `tests/grammars.h`, a `tests/corpus/<name>/`
-directory, and a line in the corpus loop in `CMakeLists.txt`. It must be ABI 15 with
+Adding a grammar also needs an entry in `tests/grammars.h` and a `tests/corpus/<name>/`
+directory, which `CMakeLists.txt` globs into a corpus test. It must be ABI 15 with
 no external scanner.
 
 ## Lint and CI

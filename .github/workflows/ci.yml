@@ -23,7 +23,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Cache fetched grammars
+      - &grammar-cache
+        name: Cache fetched grammars
         uses: actions/cache@v4
         with:
           path: build/_grammars
@@ -58,7 +59,8 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: stable
-      - run: cargo test --all-targets
+      # tf-bench is built and run by the Benchmark job.
+      - run: cargo test -p tree-feller --all-targets
       - run: cargo test --doc
 
   lint:
@@ -89,11 +91,7 @@ jobs:
             | xargs clang-format --dry-run -Werror
 
       # clang-tidy needs a compilation database, which needs the grammars.
-      - name: Cache fetched grammars
-        uses: actions/cache@v4
-        with:
-          path: build/_grammars
-          key: grammars-${{ hashFiles('cmake/TreeFellerGrammars.cmake') }}
+      - *grammar-cache
 
       - name: Configure
         run: cmake -S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
@@ -103,14 +101,7 @@ jobs:
           git ls-files 'lib/src/*.c' 'tests/test_*.c' 'tools/*.c' \
             | xargs clang-tidy -p build --warnings-as-errors='*'
 
-  # The whole suite again, under sanitizers.
-  #
-  # clang rather than the runner's default gcc, and still at -O0. gcc's address
-  # sanitizer at -O0 emits an out-of-line call through the PLT into the shared
-  # libasan for every instrumented access and inlines nothing, which takes the
-  # exhaustive UTF-8 test from 12 s to 2,562 s -- measured, both passing. Raising
-  # the optimization level fixes it too (0.9 s), at the cost of the redzones
-  # around locals the optimizer promotes, so the compiler is the thing to change.
+  # The whole suite again, under sanitizers. clang, not gcc: see CLAUDE.md.
   sanitize:
     name: Sanitize
     runs-on: ubuntu-latest
@@ -123,11 +114,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Cache fetched grammars
-        uses: actions/cache@v4
-        with:
-          path: build/_grammars
-          key: grammars-${{ hashFiles('cmake/TreeFellerGrammars.cmake') }}
+      - *grammar-cache
 
       - name: Configure
         run: |
