@@ -187,6 +187,28 @@ the stack into the real parser mid-split, which moves `p->depth` under the
 frontier and under the private-replay capture, so it was not attempted.
 `integration/perf/` has a generator for the shape.
 
+## Streaming input
+
+The lexer reads one contiguous buffer (`tf_lexer.h`), and `tf_file_open` maps a
+file to provide it. A pull source, such as a ring buffer over a stream, was
+designed but not built: nothing needs one yet, and it would add an indirection on
+every byte. It would also lift the 4 GiB limit of `uint32_t` offsets. What it has
+to guarantee, as measured:
+
+* **Lookbehind of one whole token.** The keyword re-lex returns to the token's
+  first byte (parser.c:645), and `tf_lexer_next` repositions to its end. The
+  longest tokens seen were 11 KB over 20,668 .dzn files and 67 KB over 7,633
+  .mzn files. Both were block comments, so the bound is the longest comment.
+* **During a split, everything from the earliest live branch to the furthest.**
+  Speculative heads advance independently, and a structural tie can replay from
+  the start of the input.
+* **Absolute byte offsets.** Everything the sink receives is an offset into the
+  whole input, and consumers that keep offsets rely on that.
+
+The ordinary parser stack is bounded by nesting depth: at most 860 cells across
+those 20,668 files, the largest of which is 61.7 MB. Speculative structure and
+private replay can hold more.
+
 ## Conflicts
 
 `SHIFT_REPEAT` actions are filtered out once at load, so most apparently-ambiguous

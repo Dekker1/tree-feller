@@ -1,14 +1,7 @@
-// Mapping a file so the parser can read it in place.
-//
-// The parser's own state is bounded by nesting depth, not by input size, but the
-// bytes still have to be addressable: everything the sink is handed is a byte
-// offset into them, and a consumer that keeps offsets rather than copying text
-// needs them to stay valid. So the whole file is mapped -- mapped, not read: the
-// pages are file-backed and the operating system can drop them again under
-// pressure, so this costs address space rather than committed memory.
-//
-// The 4 GiB ceiling is the `uint32_t` byte offset, the same limit tree-sitter
-// has. Above that, a pull source would be needed; see the note in tf_lexer.h.
+// Maps a file so the parser reads it in place. Mapped rather than read: the pages
+// are file-backed, so a large input costs address space, not committed memory,
+// and the byte offsets the sink is handed stay valid. The 4 GiB ceiling is the
+// `uint32_t` offset, as in tree-sitter.
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>

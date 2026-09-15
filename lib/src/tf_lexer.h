@@ -36,25 +36,7 @@ typedef struct {
   TSStateId token_lex_state;
 } TFLexer;
 
-// CONSIDERATION: the source is one contiguous buffer, indexed directly. A pull source
-// -- a ring buffer over a stream -- was designed for but not built, because
-// nothing yet needs one and an indirection on every byte is not free. What it
-// would have to guarantee, measured rather than guessed:
-//
-//   * Lookbehind of one whole token. The keyword re-lex returns to the token's
-//     first byte (parser.c:645), and `tf_lexer_next` repositions to its end.
-//     Longest token seen: 11 KB over 20,668 .dzn, 67 KB over 7,633 .mzn -- both
-//     block comments, so the bound is "longest comment", not "longest literal".
-//   * During split mode, cover from the earliest live branch's position to the
-//     furthest. Speculative heads can advance independently. Structural ties
-//     can also require replay from the beginning of the source.
-//   * Byte offsets stay absolute. Everything the sink is handed is an offset
-//     into the whole input, and a consumer that keeps offsets rather than
-//     copying text needs them to keep meaning something.
-//
-// The ordinary parser stack is bounded by nesting depth -- 860 cells at the
-// deepest across those same 20,668 files, the largest of which is 61.7 MB.
-// Speculative structure and private prefix replay can retain more.
+// The source is one contiguous buffer, indexed directly.
 void tf_lexer_init(TFLexer *self, const TFLanguage *lang, const void *source, uint32_t size);
 
 void tf_lexer_seek(TFLexer *self, uint32_t byte, TFPoint point);
