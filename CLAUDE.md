@@ -38,6 +38,10 @@ separately and are not a result about tree-feller.
   diffing its parse trace against ours beats reading tables.
 - **Benchmark numbers drift with machine state.** Only trust A/B measured
   back-to-back in the same session.
+- **Code layout alone moves a timing by 15%.** The same library source linked
+  into two `tf_diff` builds measured 0.72 s and 0.90 s on `mzn-challenge`. An A/B
+  that changes anything else in the binary needs `-falign-functions=64
+  -falign-loops=64` on both sides before the difference means anything.
 - **Linux finds things macOS does not.** glibc declares `memcpy` non-null, so a
   zero-length copy from a null pointer passes here and fails there — under UBSan
   *and* under clang-tidy. Pinning the tool version does not make the platforms
