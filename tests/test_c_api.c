@@ -2,7 +2,7 @@
 // walks the whole public header from C so that a C consumer stays a tested
 // configuration rather than an assumed one.
 //
-// Behaviour is covered in Rust (`lib/tests/`); what is checked here is that
+// Behaviour is covered in Rust (`tests/`); what is checked here is that
 // every entry point is reachable, composes, and does something recognisable.
 #include <stdio.h>
 #include <stdlib.h>
@@ -42,14 +42,18 @@ static void *on_reduce(void *payload, const TFReduction *reduction) {
 }
 
 // The value a consumer builds is whatever it returns; here, a node count.
-static void *on_node(void *payload, const TFVisibleNode *node) {
-  (void)payload;
+static size_t count_nodes(const TFVisibleNode *node) {
   size_t total = 1;
   for (uint32_t i = 0; i < node->child_count; i++) {
     total += (size_t)node->children[i].value;
   }
+  return total;
+}
+
+static void *on_node(void *payload, const TFVisibleNode *node) {
+  (void)payload;
   visible_nodes++;
-  return (void *)total;
+  return (void *)count_nodes(node);
 }
 
 // An allocating consumer, to check that a failed parse hands everything back
@@ -74,12 +78,8 @@ static void on_discard(void *payload, void *value) {
 
 static void *on_hidden(void *payload, const TFVisibleNode *node) {
   (void)payload;
-  size_t total = 0;
-  for (uint32_t i = 0; i < node->child_count; i++) {
-    total += (size_t)node->children[i].value;
-  }
   folded_runs++;
-  return (void *)(total + 1);  // never NULL, which would decline the fold
+  return (void *)count_nodes(node);  // never NULL, which would decline the fold
 }
 
 int main(void) {

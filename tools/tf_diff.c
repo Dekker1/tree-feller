@@ -42,23 +42,10 @@ typedef struct {
   size_t len, capacity;
 } Nodes;
 
-// This is a test tool, so running out of memory is fatal rather than handled --
-// but `p = realloc(p, n)` still loses the original buffer when it fails, so the
-// result goes through here instead.
-static void *xrealloc(void *ptr, size_t size) {
-  void *grown = realloc(ptr, size);
-  if (grown == NULL) {
-    free(ptr);
-    fprintf(stderr, "out of memory\n");
-    exit(2);
-  }
-  return grown;
-}
-
 static void nodes_push(Nodes *self, Node node) {
   if (self->len == self->capacity) {
     self->capacity = self->capacity ? self->capacity * 2 : 1024;
-    self->data = xrealloc(self->data, self->capacity * sizeof(Node));
+    self->data = tf_xrealloc(self->data, self->capacity * sizeof(Node));
   }
   self->data[self->len++] = node;
 }
@@ -102,15 +89,15 @@ static void walk(TSTreeCursor *cursor, Nodes *out) {
 typedef struct {
   Nodes nodes;
   size_t *links;  // child indices, `child_count` of them from each node's `base`
-  size_t *base;
-  size_t link_count, link_capacity;
+  size_t *base;   // grown with `nodes`, to `base_capacity`
+  size_t link_count, link_capacity, base_capacity;
 } Collector;
 
 static void *on_node(void *payload, const TFVisibleNode *node) {
   Collector *self = payload;
   if (self->link_count + node->child_count > self->link_capacity) {
     self->link_capacity = (self->link_count + node->child_count) * 2;
-    self->links = xrealloc(self->links, self->link_capacity * sizeof(size_t));
+    self->links = tf_xrealloc(self->links, self->link_capacity * sizeof(size_t));
   }
   size_t base = self->link_count;
   for (uint32_t i = 0; i < node->child_count; i++) {
@@ -132,7 +119,10 @@ static void *on_node(void *payload, const TFVisibleNode *node) {
                                .end_column = node->end_point.column,
                                .child_count = node->child_count,
                            });
-  self->base = xrealloc(self->base, self->nodes.len * sizeof(size_t));
+  if (self->base_capacity < self->nodes.capacity) {
+    self->base_capacity = self->nodes.capacity;
+    self->base = tf_xrealloc(self->base, self->base_capacity * sizeof(size_t));
+  }
   self->base[self->nodes.len - 1] = base;
   return (void *)self->nodes.len;  // 1-based, so NULL is never a valid handle
 }
@@ -158,33 +148,33 @@ static bool only_mode;
 // being removed.
 static unsigned expected_failures;
 
-static const char *name_of(const TSLanguage *ts, TSSymbol symbol) {
-  return ts_language_symbol_name(ts, symbol);
+// Everything the comparison holds on to for one grammar, loaded once.
+typedef struct {
+  const TSLanguage *ts;
+  TFLanguage *lang;
+  TSParser *parser;
+} Grammar;
+
+static void print_node(const char *label, const TSLanguage *ts, const Node *node) {
+  fprintf(stderr, "    %s %s prod=%u field=%u named=%d extra=%d [%u,%u) (%u,%u)-(%u,%u) kids=%u\n",
+          label, ts_language_symbol_name(ts, node->symbol), node->production_id, node->field_id,
+          node->named, node->extra, node->start_byte, node->end_byte, node->start_row,
+          node->start_column, node->end_row, node->end_column, node->child_count);
 }
 
-static void report_one(const TSLanguage *ts, size_t index, const Node *node) {
-  fprintf(stderr, "    %3zu %-24s prod=%-4u field=%-3u named=%d extra=%d [%u,%u) kids=%u\n", index,
-          name_of(ts, node->symbol), node->production_id, node->field_id, node->named, node->extra,
-          node->start_byte, node->end_byte, node->child_count);
+static void print_nodes(const char *heading, const TSLanguage *ts, const Nodes *nodes) {
+  fprintf(stderr, "  %s:\n", heading);
+  for (size_t i = 0; i < nodes->len; i++) {
+    char label[24];
+    snprintf(label, sizeof(label), "%3zu", i);
+    print_node(label, ts, &nodes->data[i]);
+  }
 }
 
-static void report(const char *path, const TSLanguage *ts, size_t index, const Node *want,
-                   const Node *got) {
-  fprintf(stderr, "  FAIL %s: node %zu\n", path, index);
-  if (want) {
-    fprintf(stderr,
-            "    want %s prod=%u field=%u named=%d extra=%d [%u,%u) (%u,%u)-(%u,%u) kids=%u\n",
-            name_of(ts, want->symbol), want->production_id, want->field_id, want->named,
-            want->extra, want->start_byte, want->end_byte, want->start_row, want->start_column,
-            want->end_row, want->end_column, want->child_count);
-  }
-  if (got) {
-    fprintf(stderr,
-            "    got  %s prod=%u field=%u named=%d extra=%d [%u,%u) (%u,%u)-(%u,%u) kids=%u\n",
-            name_of(ts, got->symbol), got->production_id, got->field_id, got->named, got->extra,
-            got->start_byte, got->end_byte, got->start_row, got->start_column, got->end_row,
-            got->end_column, got->child_count);
-  }
+static void parse_failed(const char *path, const TFError *error) {
+  fprintf(stderr, "  FAIL %s: %u:%u: %s\n", path, error->point.row + 1, error->point.column,
+          error->message);
+  failed++;
 }
 
 static bool same(const Node *a, const Node *b) { return memcmp(a, b, sizeof(Node)) == 0; }
@@ -211,34 +201,23 @@ static uint32_t error_limit(TSNode root, uint32_t from) {
   return limit > from ? limit : ts_node_end_byte(root);
 }
 
-static void check(const char *path, const TSLanguage *ts, const void *bytes, uint32_t size) {
+static void check(const char *path, const Grammar *g, const void *bytes, uint32_t size) {
   const char *source = bytes;
+  TFError error;
   if (only_mode) {
-    const char *load_error = NULL;
-    TFLanguage *lang = tf_language_load(ts, &load_error);
-    TFError error;
-    if (tf_parse(lang, source, size, NULL, NULL, &error)) {
+    if (tf_parse(g->lang, source, size, NULL, NULL, &error))
       checked++;
-    } else {
-      fprintf(stderr, "  FAIL %s: %u:%u: %s\n", path, error.point.row + 1, error.point.column,
-              error.message);
-      failed++;
-    }
-    tf_language_free(lang);
+    else
+      parse_failed(path, &error);
     return;
   }
 
-  TSParser *parser = ts_parser_new();
-  ts_parser_set_language(parser, ts);
-  TSTree *tree = ts_parser_parse_string(parser, NULL, source, size);
+  TSTree *tree = ts_parser_parse_string(g->parser, NULL, source, size);
   TSNode root = ts_tree_root_node(tree);
 
-  const char *load_error = NULL;
-  TFLanguage *lang = tf_language_load(ts, &load_error);
   Collector collector = {0};
   TFVisibleSink sink = {.payload = &collector, .on_node = on_node};
-  TFError error;
-  bool ok = tf_parse_visible(lang, source, size, &sink, NULL, &error);
+  bool ok = tf_parse_visible(g->lang, source, size, &sink, NULL, &error);
 
   if (ts_node_has_error(root)) {
     // Invalid input: tree-feller must refuse it, at or before the point where
@@ -276,9 +255,7 @@ static void check(const char *path, const TSLanguage *ts, const void *bytes, uin
   }
 
   if (!ok) {
-    fprintf(stderr, "  FAIL %s: %u:%u: %s\n", path, error.point.row + 1, error.point.column,
-            error.message);
-    failed++;
+    parse_failed(path, &error);
     goto done;
   }
 
@@ -298,15 +275,14 @@ static void check(const char *path, const TSLanguage *ts, const void *bytes, uin
       break;
     }
   }
-  if ((mismatch < limit || want.len != got.len) && verbose) {
-    fprintf(stderr, "  reference:\n");
-    for (size_t i = 0; i < want.len; i++) report_one(ts, i, &want.data[i]);
-    fprintf(stderr, "  tree-feller:\n");
-    for (size_t i = 0; i < got.len; i++) report_one(ts, i, &got.data[i]);
-  }
   if (mismatch < limit || want.len != got.len) {
-    report(path, ts, mismatch, mismatch < want.len ? &want.data[mismatch] : NULL,
-           mismatch < got.len ? &got.data[mismatch] : NULL);
+    if (verbose) {
+      print_nodes("reference", g->ts, &want);
+      print_nodes("tree-feller", g->ts, &got);
+    }
+    fprintf(stderr, "  FAIL %s: node %zu\n", path, mismatch);
+    if (mismatch < want.len) print_node("want", g->ts, &want.data[mismatch]);
+    if (mismatch < got.len) print_node("got ", g->ts, &got.data[mismatch]);
     if (want.len != got.len) {
       fprintf(stderr, "    %zu reference nodes, %zu from tree-feller\n", want.len, got.len);
     }
@@ -322,12 +298,10 @@ done:
   free(collector.nodes.data);
   free(collector.links);
   free(collector.base);
-  tf_language_free(lang);
   ts_tree_delete(tree);
-  ts_parser_delete(parser);
 }
 
-static void check_file(const TSLanguage *ts, const char *path) {
+static void check_file(const Grammar *g, const char *path) {
   TFFile file;
   TFError error;
   if (!tf_file_open(&file, path, &error)) {
@@ -335,7 +309,7 @@ static void check_file(const TSLanguage *ts, const char *path) {
     failed++;
     return;
   }
-  check(path, ts, file.data, file.size);
+  check(path, g, file.data, file.size);
   tf_file_close(&file);
 }
 
@@ -348,7 +322,7 @@ static bool rule_of(const char *line, char character) {
   return *line == '\n' || *line == '\0';
 }
 
-static void check_corpus(const TSLanguage *ts, const char *path) {
+static void check_corpus(const Grammar *g, const char *path) {
   FILE *file = fopen(path, "rb");
   if (!file) {
     fprintf(stderr, "  FAIL %s: cannot open\n", path);
@@ -385,7 +359,7 @@ static void check_corpus(const TSLanguage *ts, const char *path) {
         char label[512];
         snprintf(label, sizeof(label), "%s:%u %s", path, ++index, name);
         source[length] = '\0';
-        check(label, ts, source, (uint32_t)length);
+        check(label, g, source, (uint32_t)length);
         state = 0;
         continue;
       }
@@ -399,7 +373,7 @@ static void check_corpus(const TSLanguage *ts, const char *path) {
   fclose(file);
 }
 
-static void check_path(const TSLanguage *ts, const char *path, const char *extension) {
+static void check_path(const Grammar *g, const char *path, const char *extension) {
   struct stat info;
   if (stat(path, &info) != 0) {
     fprintf(stderr, "  FAIL %s: cannot stat\n", path);
@@ -408,9 +382,9 @@ static void check_path(const TSLanguage *ts, const char *path, const char *exten
   }
   if (!S_ISDIR(info.st_mode)) {
     if (corpus_mode)
-      check_corpus(ts, path);
+      check_corpus(g, path);
     else
-      check_file(ts, path);
+      check_file(g, path);
     return;
   }
   DIR *dir = opendir(path);
@@ -420,16 +394,21 @@ static void check_path(const TSLanguage *ts, const char *path, const char *exten
     if (entry->d_name[0] == '.') continue;
     char child[4096];
     snprintf(child, sizeof(child), "%s/%s", path, entry->d_name);
-    struct stat child_info;
-    if (stat(child, &child_info) != 0) continue;
-    if (S_ISDIR(child_info.st_mode)) {
-      check_path(ts, child, extension);
+    bool is_dir = entry->d_type == DT_DIR;
+    // Symlinks are followed, and some filesystems do not fill in the type.
+    if (entry->d_type != DT_DIR && entry->d_type != DT_REG) {
+      struct stat child_info;
+      if (stat(child, &child_info) != 0) continue;
+      is_dir = S_ISDIR(child_info.st_mode);
+    }
+    if (is_dir) {
+      check_path(g, child, extension);
     } else {
       const char *dot = strrchr(entry->d_name, '.');
       if (dot && strcmp(dot, extension) == 0)
-        check_file(ts, child);
+        check_file(g, child);
       else if (corpus_mode && dot && strcmp(dot, ".txt") == 0)
-        check_corpus(ts, child);
+        check_corpus(g, child);
     }
   }
   closedir(dir);
@@ -461,15 +440,23 @@ int main(int argc, char **argv) {
     }
   }
 
+  const char *load_error = NULL;
+  Grammar g = {.ts = ts, .lang = tf_language_load(ts, &load_error), .parser = ts_parser_new()};
+  if (g.lang == NULL) {
+    fprintf(stderr, "cannot load grammar: %s\n", load_error);
+    ts_parser_delete(g.parser);
+    return 2;
+  }
+  ts_parser_set_language(g.parser, ts);
+
   if (first < argc) {
-    for (int i = first; i < argc; i++) check_path(ts, argv[i], extension);
+    for (int i = first; i < argc; i++) check_path(&g, argv[i], extension);
   } else {
     char path[4096];
-    while (fgets(path, sizeof(path), stdin)) {
-      path[strcspn(path, "\n")] = '\0';
-      if (*path) check_file(ts, path);
-    }
+    while (tf_next_stdin_path(path, sizeof(path))) check_file(&g, path);
   }
+  tf_language_free(g.lang);
+  ts_parser_delete(g.parser);
 
   printf("%u matched, %u not parseable by this grammar, %u failed\n", checked, skipped, failed);
   if (failed != expected_failures) {

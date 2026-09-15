@@ -30,18 +30,6 @@ typedef struct {
   size_t len, cap;
 } Leaves;
 
-// A failed `realloc` leaves the original buffer alive; `p = realloc(p, n)` drops
-// it. Tests may die on allocation failure, but not silently lose memory first.
-static void *xrealloc(void *ptr, size_t size) {
-  void *grown = realloc(ptr, size);
-  if (grown == NULL) {
-    free(ptr);
-    fprintf(stderr, "out of memory\n");
-    exit(2);
-  }
-  return grown;
-}
-
 static void collect(Subtree tree, Length offset, Leaves *out) {
   uint32_t count = ts_subtree_child_count(tree);
   if (count == 0) {
@@ -49,7 +37,7 @@ static void collect(Subtree tree, Length offset, Leaves *out) {
     Length end = length_add(start, ts_subtree_size(tree));
     if (out->len == out->cap) {
       out->cap = out->cap ? out->cap * 2 : 256;
-      out->data = xrealloc(out->data, out->cap * sizeof(Leaf));
+      out->data = tf_xrealloc(out->data, out->cap * sizeof(Leaf));
     }
     out->data[out->len++] = (Leaf){
         .symbol = ts_subtree_symbol(tree),
@@ -74,10 +62,31 @@ static unsigned failures = 0;
 static unsigned skipped = 0;
 static bool tolerate_reference_errors = false;
 
-static void check(const char *label, const TSLanguage *ts, const char *source, size_t size) {
-  TSParser *parser = ts_parser_new();
-  ts_parser_set_language(parser, ts);
-  TSTree *tree = ts_parser_parse_string(parser, NULL, source, (uint32_t)size);
+// One grammar's tables and reference parser, loaded once and shared by every case.
+typedef struct {
+  const TSLanguage *ts;
+  TFLanguage *lang;
+  TSParser *parser;
+} Grammar;
+
+static Grammar grammar_load(const TSLanguage *ts) {
+  const char *error = NULL;
+  Grammar g = {.ts = ts, .lang = tf_language_load(ts, &error), .parser = ts_parser_new()};
+  if (g.lang == NULL) {
+    fprintf(stderr, "cannot load grammar: %s\n", error);
+    exit(1);
+  }
+  ts_parser_set_language(g.parser, ts);
+  return g;
+}
+
+static void grammar_free(Grammar *g) {
+  tf_language_free(g->lang);
+  ts_parser_delete(g->parser);
+}
+
+static void check(const char *label, const Grammar *g, const char *source, size_t size) {
+  TSTree *tree = ts_parser_parse_string(g->parser, NULL, source, (uint32_t)size);
   // The reference must be a clean parse, or the leaf sequence contains tokens
   // lexed in ERROR_STATE, which says nothing about the lexer.
   if (ts_node_has_error(ts_tree_root_node(tree))) {
@@ -88,17 +97,14 @@ static void check(const char *label, const TSLanguage *ts, const char *source, s
       failures++;
     }
     ts_tree_delete(tree);
-    ts_parser_delete(parser);
     return;
   }
 
   Leaves leaves = {0};
   collect(tree->root, length_zero(), &leaves);
 
-  const char *error = NULL;
-  TFLanguage *lang = tf_language_load(ts, &error);
   TFLexer lexer;
-  tf_lexer_init(&lexer, lang, source, (uint32_t)size);
+  tf_lexer_init(&lexer, g->lang, source, (uint32_t)size);
 
   for (size_t i = 0; i < leaves.len; i++) {
     Leaf want = leaves.data[i];
@@ -120,9 +126,9 @@ static void check(const char *label, const TSLanguage *ts, const char *source, s
       fprintf(stderr,
               "  FAIL %s: leaf %zu state %u: want %s [%u,%u) (%u,%u)-(%u,%u), "
               "got %s [%u,%u) (%u,%u)-(%u,%u)\n",
-              label, i, want.state, ts_language_symbol_name(ts, want.symbol), want.start_byte,
+              label, i, want.state, ts_language_symbol_name(g->ts, want.symbol), want.start_byte,
               want.end_byte, want.start_point.row, want.start_point.column, want.end_point.row,
-              want.end_point.column, ts_language_symbol_name(ts, got.symbol), got.start_byte,
+              want.end_point.column, ts_language_symbol_name(g->ts, got.symbol), got.start_byte,
               got.end_byte, got.start_point.row, got.start_point.column, got.end_point.row,
               got.end_point.column);
       failures++;
@@ -131,37 +137,19 @@ static void check(const char *label, const TSLanguage *ts, const char *source, s
   }
 
   free(leaves.data);
-  tf_language_free(lang);
   ts_tree_delete(tree);
-  ts_parser_delete(parser);
 }
 
-static void check_file(const TSLanguage *ts, const char *path) {
-  FILE *f = fopen(path, "rb");
-  if (!f) {
-    fprintf(stderr, "  FAIL: cannot open %s\n", path);
+static void check_file(const Grammar *g, const char *path) {
+  TFFile file;
+  TFError error;
+  if (!tf_file_open(&file, path, &error)) {
+    fprintf(stderr, "  FAIL %s\n", error.message);
     failures++;
     return;
   }
-  fseek(f, 0, SEEK_END);
-  long size = ftell(f);
-  fseek(f, 0, SEEK_SET);
-  if (size < 0) {
-    fprintf(stderr, "  FAIL: cannot size %s\n", path);
-    failures++;
-    fclose(f);
-    return;
-  }
-  char *source = malloc((size_t)size + 1);
-  if (source == NULL) {
-    fprintf(stderr, "out of memory\n");
-    exit(2);
-  }
-  size_t read = fread(source, 1, (size_t)size, f);
-  source[read] = '\0';
-  fclose(f);
-  check(path, ts, source, read);
-  free(source);
+  check(path, g, file.data, file.size);
+  tf_file_close(&file);
 }
 
 int main(int argc, char **argv) {
@@ -184,11 +172,13 @@ int main(int argc, char **argv) {
   };
 
   printf("lexer token streams:\n");
+  Grammar datazinc = grammar_load(tree_sitter_datazinc());
   for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
     char label[32];
     snprintf(label, sizeof(label), "case %zu", i);
-    check(label, tree_sitter_datazinc(), cases[i], strlen(cases[i]));
+    check(label, &datazinc, cases[i], strlen(cases[i]));
   }
+  grammar_free(&datazinc);
   printf("  %zu inline cases\n", sizeof(cases) / sizeof(cases[0]));
 
   // Optional bulk run: `test_lexer <grammar> <file>...`, with paths also
@@ -196,19 +186,14 @@ int main(int argc, char **argv) {
   if (argc > 1) {
     tolerate_reference_errors = true;
     const TFGrammar *g = tf_grammar_named(argv[1]);
-    const TSLanguage *ts = g != NULL ? g->language() : tree_sitter_datazinc();
+    Grammar grammar = grammar_load(g != NULL ? g->language() : tree_sitter_datazinc());
     unsigned files = 0;
-    for (int i = 2; i < argc; i++, files++) check_file(ts, argv[i]);
+    for (int i = 2; i < argc; i++, files++) check_file(&grammar, argv[i]);
     if (argc == 2) {
       char path[4096];
-      while (fgets(path, sizeof(path), stdin)) {
-        path[strcspn(path, "\n")] = '\0';
-        if (*path) {
-          check_file(ts, path);
-          files++;
-        }
-      }
+      for (; tf_next_stdin_path(path, sizeof(path)); files++) check_file(&grammar, path);
     }
+    grammar_free(&grammar);
     printf("  %s: %u files, %u skipped (not parseable by this grammar)\n", argv[1], files, skipped);
   }
 

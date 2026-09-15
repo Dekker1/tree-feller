@@ -6,6 +6,8 @@
 #ifndef TF_TEST_GRAMMARS_H
 #define TF_TEST_GRAMMARS_H
 
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "tree_feller.h"
@@ -44,6 +46,28 @@ static inline const TFGrammar *tf_grammar_named(const char *name) {
     if (strcmp(TF_GRAMMARS[i].name, name) == 0) return &TF_GRAMMARS[i];
   }
   return NULL;
+}
+
+// Running out of memory is fatal in a test, but `p = realloc(p, n)` still loses
+// the original buffer when it fails, so the result goes through here instead.
+static inline void *tf_xrealloc(void *ptr, size_t size) {
+  void *grown = realloc(ptr, size);
+  if (grown == NULL) {
+    free(ptr);
+    fprintf(stderr, "out of memory\n");
+    exit(2);
+  }
+  return grown;
+}
+
+// The next non-empty line of stdin, without its newline, so a tool can be fed a
+// find(1) pipeline.
+static inline bool tf_next_stdin_path(char *path, int size) {
+  while (fgets(path, size, stdin)) {
+    path[strcspn(path, "\n")] = '\0';
+    if (*path) return true;
+  }
+  return false;
 }
 
 #endif  // TF_TEST_GRAMMARS_H
