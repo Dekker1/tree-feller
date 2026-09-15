@@ -261,10 +261,11 @@ static bool tf_parser__run(const TFLanguage *lang, const void *source, size_t si
   }
   tf_lexer_init(&self.lexer, lang, source, (uint32_t)size);
   bool ok = false;
+  // Zeroed, so running out of memory before the first token reports byte 0.
+  TFToken token = {0};
 
   if (!tf_parser__grow(&self, 64)) {
-    tf_parser__fail(&self, 0, (TFPoint){0, 0}, "out of memory");
-    goto done;
+    goto oom;
   }
   // State 0 is ERROR_STATE (error_costs.h:4); parsing starts at state 1
   // (stack.c:/ts_stack_new/, which seeds the base node with state 1).
@@ -272,7 +273,6 @@ static bool tf_parser__run(const TFLanguage *lang, const void *source, size_t si
 
   for (;;) {
     TSStateId state = self.states[self.depth];
-    TFToken token;
     if (!tf_lexer_next(&self.lexer, state, &token)) {
       tf_parser__fail(&self, self.lexer.byte, self.lexer.point, "unexpected character");
       goto done;
@@ -301,8 +301,7 @@ static bool tf_parser__run(const TFLanguage *lang, const void *source, size_t si
         // An extra does not change the state (parser.c:1633).
         if (!tf_parser__shift(&self, &token, action.shift.extra,
                               action.shift.extra ? state : action.shift.state)) {
-          tf_parser__fail(&self, token.start_byte, token.start_point, "out of memory");
-          goto done;
+          goto oom;
         }
         break;
       }
@@ -310,8 +309,7 @@ static bool tf_parser__run(const TFLanguage *lang, const void *source, size_t si
       if (action.type == TSParseActionTypeReduce) {
         if (!tf_parser__reduce(&self, action.reduce.symbol, action.reduce.child_count,
                                action.reduce.production_id)) {
-          tf_parser__fail(&self, token.start_byte, token.start_point, "out of memory");
-          goto done;
+          goto oom;
         }
         state = self.states[self.depth];
         continue;
@@ -328,8 +326,7 @@ static bool tf_parser__run(const TFLanguage *lang, const void *source, size_t si
           uint32_t total = below + reduction.node_count + above + 1;
           TFNode *children = malloc(total * sizeof(TFNode));
           if (!children) {
-            tf_parser__fail(&self, token.start_byte, token.start_point, "out of memory");
-            goto done;
+            goto oom;
           }
           if (below > 0) memcpy(children, self.nodes, below * sizeof(TFNode));
           // A root with an empty production never allocated a child array.
@@ -367,6 +364,8 @@ static bool tf_parser__run(const TFLanguage *lang, const void *source, size_t si
     }
   }
 
+oom:
+  tf_parser__fail(&self, token.start_byte, token.start_point, "out of memory");
 done:
   // A failed parse has no root to hand the consumer, so anything it built is
   // otherwise dropped on the floor. Give it back before the stack goes away.
