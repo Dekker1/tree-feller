@@ -1,6 +1,7 @@
 // The LR driver. Shifts and reduces straight into the sink's own values; no tree
 // is built on the ordinary path. Conflicts retain private structural alternatives
 // until selection; rare ties reconstruct completed structure with a private replay.
+#include <assert.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -22,21 +23,13 @@ typedef struct {
   uint32_t depth;
   uint32_t capacity;
 
-  // parser.c:/ts_parser__accept/ rebuilds the root node to absorb the trailing
-  // extras above it plus the end token, so the reduction that produces the root
-  // is held back until the end token arrives and can be included.
   // Extras shifted before any real content sit at the bottom of the stack and
-  // stay there; the root absorbs them too.
+  // stay there; the root absorbs them (see tf_parser__reduce).
   uint32_t leading;
-
-  struct {
-    bool pending;
-    uint32_t base;
-    // `children` points at the array below, which owns a copy of the stack cells.
-    TFReduction reduction;
-    TFNode *children;
-    uint32_t capacity;
-  } root;
+#ifndef NDEBUG
+  // Whether the root went to the sink with the end token, for accept's assertion.
+  bool root_emitted;
+#endif
 
   TFError *error;
   uint32_t split_count;
@@ -153,18 +146,12 @@ static void tf_parser__fail_unexpected(TFParser *self, TSStateId state, const TF
                   expected, tf_parser__symbol_name(self->lang, token->symbol));
 }
 
-// Hand the held-back root reduction to the sink after all, because something
-// other than the end token turned out to follow it.
-static void *tf_parser__flush_root(TFParser *self) {
-  self->root.pending = false;
-  return tf_parser__emit_reduce(self, &self->root.reduction);
-}
-
 // parser.c:/ts_parser__reduce/, with the GLR bookkeeping removed. Pops
 // `child_count` non-extra cells -- carrying along any extras between them --
-// hands them to the sink, and pushes the result in their place.
+// hands them to the sink, and pushes the result in their place. `lookahead` is
+// the token that will follow, where the caller knows it.
 static bool tf_parser__reduce(TFParser *self, TSSymbol symbol, uint32_t child_count,
-                              uint16_t production_id) {
+                              uint16_t production_id, const TFToken *lookahead) {
   // The extras above the last real child are exactly the run this scan crosses
   // before it reaches one, so counting them here saves walking the top of the
   // stack a second time.
@@ -178,13 +165,6 @@ static bool tf_parser__reduce(TFParser *self, TSSymbol symbol, uint32_t child_co
     }
   }
   uint32_t base = self->depth - popped;
-
-  // A held-back root turns out not to be the root after all if something reaches
-  // down to it.
-  if (self->root.pending && base <= self->root.base) {
-    self->nodes[self->root.base].value = tf_parser__flush_root(self);
-  }
-
   uint32_t end = self->depth - trailing_count;
 
   TFReduction reduction = {
@@ -209,38 +189,46 @@ static bool tf_parser__reduce(TFParser *self, TSSymbol symbol, uint32_t child_co
 
   TSStateId state = tf_next_state(self->lang, self->states[base], symbol);
 
-  // If nothing follows this node but extras and the end of the file, it is the
-  // root: keep its children so they can be handed over in one piece once the end
-  // token is in hand.
-  bool is_root = base == self->leading && self->lang->accepts_end[state];
-  if (is_root) {
-    if (reduction.node_count > self->root.capacity) {
-      TFNode *children = realloc(self->root.children, reduction.node_count * sizeof(TFNode));
-      if (!children) {
-        return false;
-      }
-      self->root.children = children;
-      self->root.capacity = reduction.node_count;
-    }
-    // An empty root production has no children and nothing allocated to hold
-    // them; glibc declares memcpy non-null, so even a zero-length copy is UB.
-    if (reduction.node_count > 0) {
-      memcpy(self->root.children, reduction.children, reduction.node_count * sizeof(TFNode));
-    }
-    self->root.pending = true;
-    self->root.base = base;
-    self->root.reduction = reduction;
-    self->root.reduction.children = self->root.children;
-  }
-
   TFNode parent = {
       .symbol = symbol,
       .start_byte = reduction.start_byte,
       .end_byte = reduction.end_byte,
       .start_point = reduction.start_point,
       .end_point = reduction.end_point,
-      .value = is_root ? NULL : tf_parser__emit_reduce(self, &reduction),
   };
+
+  // parser.c:/ts_parser__accept/ rebuilds the root to absorb the extras around it
+  // and the end token. The root is only reduced with the end token as lookahead,
+  // after which accept is the only action, so the stack already holds exactly
+  // those children in order: leading extras, the root's own and trailing extras.
+  // Nothing checks the tables for that; accept asserts it held.
+  if (lookahead && lookahead->symbol == 0 && base == self->leading &&
+      self->lang->accepts_end[state]) {
+    if (!tf_parser__grow(self, self->depth + 1)) {
+      return false;
+    }
+#ifndef NDEBUG
+    self->root_emitted = true;
+#endif
+    TFNode *children = self->nodes;
+    uint32_t total = self->depth + 1;
+    children[self->depth] = (TFNode){
+        .symbol = lookahead->symbol,
+        .extra = true,
+        .start_byte = lookahead->start_byte,
+        .end_byte = lookahead->end_byte,
+        .start_point = lookahead->start_point,
+        .end_point = lookahead->end_point,
+        .value = tf_parser__emit_shift(self, lookahead, true),
+    };
+    reduction.node_count = total;
+    reduction.children = children;
+    reduction.start_byte = total > 1 ? children[0].start_byte : lookahead->start_byte;
+    reduction.start_point = total > 1 ? children[0].start_point : lookahead->start_point;
+    reduction.end_byte = lookahead->end_byte;
+    reduction.end_point = lookahead->end_point;
+  }
+  parent.value = tf_parser__emit_reduce(self, &reduction);
 
   // The parent takes the cell at `base`, and the trailing extras excluded from it
   // sit directly on top in the new state (parser.c:/trailing_extras/). They move
@@ -347,7 +335,7 @@ static bool tf_parser__run(const TFLanguage *lang, const void *source, size_t si
 
       if (action.type == TSParseActionTypeReduce) {
         if (!tf_parser__reduce(&self, action.reduce.symbol, action.reduce.child_count,
-                               action.reduce.production_id)) {
+                               action.reduce.production_id, &token)) {
           goto oom;
         }
         state = self.states[self.depth];
@@ -355,47 +343,12 @@ static bool tf_parser__run(const TFLanguage *lang, const void *source, size_t si
       }
 
       if (action.type == TSParseActionTypeAccept) {
-        void *value = self.depth ? self.nodes[self.root.base].value : NULL;
-        if (self.root.pending) {
-          // The end token joins the root as a trailing extra, along with any
-          // extras that were sitting above it (parser.c:/ts_parser__accept/).
-          TFReduction reduction = self.root.reduction;
-          uint32_t below = self.root.base;
-          uint32_t above = self.depth - self.root.base - 1;
-          uint32_t total = below + reduction.node_count + above + 1;
-          TFNode *children = malloc(total * sizeof(TFNode));
-          if (!children) {
-            goto oom;
-          }
-          if (below > 0) {
-            memcpy(children, self.nodes, below * sizeof(TFNode));
-          }
-          // A root with an empty production never allocated a child array.
-          if (reduction.node_count > 0) {
-            memcpy(children + below, reduction.children, reduction.node_count * sizeof(TFNode));
-          }
-          memcpy(children + below + reduction.node_count, &self.nodes[self.root.base + 1],
-                 above * sizeof(TFNode));
-          children[total - 1] = (TFNode){
-              .symbol = token.symbol,
-              .extra = true,
-              .start_byte = token.start_byte,
-              .end_byte = token.end_byte,
-              .start_point = token.start_point,
-              .end_point = token.end_point,
-              .value = tf_parser__emit_shift(&self, &token, true),
-          };
-          reduction.node_count = total;
-          reduction.children = children;
-          reduction.start_byte = total > 1 ? children[0].start_byte : token.start_byte;
-          reduction.start_point = total > 1 ? children[0].start_point : token.start_point;
-          reduction.end_byte = token.end_byte;
-          reduction.end_point = token.end_point;
-          value = tf_parser__emit_reduce(&self, &reduction);
-          free(children);
-        }
-        if (root) {
-          *root = value;
+        // The root reduction already went to the sink, end token included. If a
+        // grammar ever reduces its root on another lookahead and still accepts,
+        // the root would be missing its trailing extras and end token.
+        assert(self.root_emitted);
+        if (root && self.leading < self.depth) {
+          *root = self.nodes[self.leading].value;
         }
         ok = true;
         goto done;
@@ -418,17 +371,9 @@ done:
         self.sink->on_discard(self.sink->payload, self.nodes[i].value);
       }
     }
-    if (self.root.pending) {
-      for (uint32_t i = 0; i < self.root.reduction.node_count; i++) {
-        if (self.root.children[i].value) {
-          self.sink->on_discard(self.sink->payload, self.root.children[i].value);
-        }
-      }
-    }
   }
   free(self.states);
   free(self.nodes);
-  free(self.root.children);
   tf_spec__free(self.spec);
   return ok;
 }

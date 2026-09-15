@@ -114,7 +114,7 @@ struct TFSpec {
   uint32_t cached_byte;
   TSStateId cached_state;
   bool has_cache, cached_keyword;
-  uint32_t finished, finished_first, finished_count;
+  uint32_t finished;
   uint32_t error_byte;
   TFPoint error_point;
   TSStateId error_state;
@@ -764,8 +764,6 @@ static void tf_spec__accept(TFSpec *s, uint32_t version, TFToken eof) {
       }
       if (tf_spec__prefer(s, s->finished, candidate)) {
         s->finished = candidate;
-        s->finished_first = slice.first;
-        s->finished_count = slice.count - 1;
       }
       break;
     }
@@ -896,8 +894,8 @@ TF_NOINLINE static bool tf_spec__replay(TFSpec *s, TFParser *p, uint32_t first, 
     for (;;) {
       if (item & 0x80000000U) {
         const TFSpecTree *done = &s->trees[item & 0x7fffffffU];
-        if (!tf_parser__reduce(p, done->token.symbol, done->structural_count,
-                               done->production_id)) {
+        if (!tf_parser__reduce(p, done->token.symbol, done->structural_count, done->production_id,
+                               NULL)) {
           return false;
         }
         break;
@@ -944,9 +942,6 @@ static bool tf_spec__capture(TFSpec *c, TFParser *p, const TFToken *token) {
       p->depth != owner->depth ||
       memcmp(p->states, owner->states, (p->depth + 1) * sizeof(TSStateId)) != 0) {
     return false;
-  }
-  if (p->root.pending) {
-    p->nodes[p->root.base].value = tf_parser__flush_root(p);
   }
   if (!TF_SPEC_RESERVE(c, capture_id, capture_capacity, p->depth)) {
     return true;
@@ -1029,8 +1024,9 @@ static bool tf_parser__split(TFParser *p, TFToken token, TFToken *next) {
     }
     tf_spec__condense(s);
     if (s->finished != TF_SPEC_NONE && s->head_count == 0) {
-      first = s->finished_first;
-      count = s->finished_count;
+      // The root's children and the extras around it, ending in the end token.
+      first = s->trees[s->finished].first_child;
+      count = s->trees[s->finished].child_count - 1;
       accepted = true;
       break;
     }
@@ -1055,15 +1051,24 @@ static bool tf_parser__split(TFParser *p, TFToken token, TFToken *next) {
       break;
     }
   }
-  if (!tf_spec__replay(s, p, first, count)) {
-    goto oom;
-  }
   if (accepted) {
     *next = s->cached;
     next->symbol = 0;
     next->start_byte = next->end_byte = p->lexer.size;
     // EOF's point is retained by the accepted candidate, including whitespace.
     next->start_point = next->end_point = s->trees[s->finished].token.end_point;
+  }
+  if (!tf_spec__replay(s, p, first, count)) {
+    goto oom;
+  }
+  if (accepted) {
+    // Only now are the trailing extras on the stack, so the root is reduced here,
+    // with the end token as lookahead, as the ordinary loop would.
+    const TFSpecTree *root = &s->trees[s->finished];
+    if (!tf_parser__reduce(p, root->token.symbol, root->structural_count, root->production_id,
+                           next)) {
+      goto oom;
+    }
     tf_lexer_seek(&p->lexer, next->end_byte, next->end_point);
   } else {
     bool keyword;
