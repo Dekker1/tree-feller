@@ -45,30 +45,6 @@ static inline uint16_t tf_lookup(const TFLanguage *self, TSStateId state, TSSymb
   return self->dense[(size_t)state * self->ts->symbol_count + symbol];
 }
 
-// language.h:78-92, verbatim: the packed form, kept as the definition the
-// expansion is built from and the tests check against. The emitted symbol groups
-// are not sorted, so this must stay a linear scan.
-static inline uint16_t tf_lookup_packed(const TFLanguage *self, TSStateId state, TSSymbol symbol) {
-  const TSLanguage *ts = self->ts;
-  if (state >= ts->large_state_count) {
-    uint32_t index = ts->small_parse_table_map[state - ts->large_state_count];
-    const uint16_t *data = &ts->small_parse_table[index];
-    uint16_t group_count = *(data++);
-    for (unsigned i = 0; i < group_count; i++) {
-      uint16_t section_value = *(data++);
-      uint16_t symbol_count = *(data++);
-      for (unsigned j = 0; j < symbol_count; j++) {
-        if (*(data++) == symbol) {
-          return section_value;
-        }
-      }
-    }
-    return 0;
-  } else {
-    return ts->parse_table[state * ts->symbol_count + symbol];
-  }
-}
-
 // language.c:66-85. `symbol` must be a terminal. The actions live immediately
 // after the entry header, hence `entry + 1`. The count excludes SHIFT_REPEAT.
 static inline const TSParseAction *tf_actions(const TFLanguage *self, TSStateId state,

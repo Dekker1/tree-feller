@@ -149,9 +149,8 @@ single indexed probe into `yytable`/`yycheck`.
 
 The fix is to expand the packed table once at load: `state_count * symbol_count`
 16-bit cells, 25 KB for DataZinc and 574 KB for MiniZinc, filled in one pass over
-the packed form. The lookup becomes an indexed load. The packed scan is kept as
-`tf_lookup_packed`, since it is the definition the expansion is built from and
-what the exhaustive table test checks against.
+the packed form. The lookup becomes an indexed load, and the exhaustive table
+test checks it against tree-sitter's own `ts_language_lookup`.
 
 Result: **29.3 -> 66.3 MB/s**, and the lookup fell from 38% of samples to 5%.
 Lexing is now the dominant cost at 52%, which is the same generated DFA
