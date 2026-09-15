@@ -79,7 +79,7 @@ endfunction()
 #
 # All are ABI 15 with no external scanner, which is what the driver accepts.
 function(tf_add_grammars)
-  set(SHACKLE "https://raw.githubusercontent.com/shackle-rs/shackle/03b6430/parsers")
+  set(SHACKLE "https://raw.githubusercontent.com/shackle-rs/shackle/d0fb4b1/parsers")
   set(tf_grammar_sources)
 
   tf_fetch_crate_grammar(tree-sitter-c 0.24.2

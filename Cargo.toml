@@ -26,5 +26,5 @@ tree-sitter-solidity = "1.2"
 tree-sitter-systemverilog = "=0.4.0"
 # Not on crates.io, but they are proper crates in the shackle repository, pinned
 # to the commit the C tests fetch their tables from.
-tree-sitter-datazinc = { git = "https://github.com/shackle-rs/shackle", rev = "03b6430" }
-tree-sitter-minizinc = { git = "https://github.com/shackle-rs/shackle", rev = "03b6430" }
+tree-sitter-datazinc = { git = "https://github.com/shackle-rs/shackle", rev = "d0fb4b1" }
+tree-sitter-minizinc = { git = "https://github.com/shackle-rs/shackle", rev = "d0fb4b1" }
