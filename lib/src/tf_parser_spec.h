@@ -290,6 +290,15 @@ static void tf_spec__extend(TFSpec *s) {
   }
 }
 
+// The frontier has no links of its own until the cell below it is unrolled, so
+// anything about to read or add its links unrolls first. False on failure.
+static inline bool tf_spec__unroll(TFSpec *s, uint32_t node) {
+  if (node == s->frontier && s->prefix_left) {
+    tf_spec__extend(s);
+  }
+  return !s->failed;
+}
+
 // stack.c:stack__subtree_is_equivalent. Equivalent links keep the existing
 // tree on a precedence tie; this is intentionally NOT ts_subtree_compare.
 static bool tf_spec__equivalent(TFSpec *s, uint32_t a, uint32_t b) {
@@ -331,11 +340,8 @@ static void tf_spec__add_link(TFSpec *s, uint32_t target, TFSpecLink link) {
     return;
   }
   // links[0] of the frontier belongs to the prefix; claim it before adding here.
-  if (target == s->frontier && s->prefix_left) {
-    tf_spec__extend(s);
-    if (s->failed) {
-      return;
-    }
+  if (!tf_spec__unroll(s, target)) {
+    return;
   }
   TFSpecNode *node = &s->nodes[target];
   for (uint32_t i = 0; i < node->link_count; i++) {
@@ -505,11 +511,8 @@ static void tf_spec__pop(TFSpec *s, uint32_t version, uint32_t goal) {
         s->slice_count = 1;
         return;
       }
-      if (goal != TF_SPEC_NONE && node == s->frontier && s->prefix_left) {
-        tf_spec__extend(s);
-        if (s->failed) {
-          return;
-        }
+      if (goal != TF_SPEC_NONE && !tf_spec__unroll(s, node)) {
+        return;
       }
       if (s->nodes[node].link_count != 1) {
         break;
@@ -529,12 +532,8 @@ static void tf_spec__pop(TFSpec *s, uint32_t version, uint32_t goal) {
   while (length && !s->failed) {
     for (uint32_t i = 0, size = length; i < size; i++) {
       TFSpecIterator current = it[i];
-      if (goal != TF_SPEC_NONE && current.node == s->frontier && s->prefix_left &&
-          current.count != goal) {
-        tf_spec__extend(s);
-        if (s->failed) {
-          return;
-        }
+      if (goal != TF_SPEC_NONE && current.count != goal && !tf_spec__unroll(s, current.node)) {
+        return;
       }
       TFSpecNode node = s->nodes[current.node];
       bool pop = goal == TF_SPEC_NONE ? node.link_count == 0 : current.count == goal;
