@@ -126,12 +126,14 @@ static const TFVisibleChild *tf_filter__run(const TFFilter *self, uint32_t posit
 
 static bool tf_filter__reserve(TFVisibleChild **array, uint32_t *capacity, uint32_t needed) {
   if (needed <= *capacity) return true;
-  uint32_t next = *capacity ? *capacity : 64;
+  // 64-bit, so doubling past 2^31 cannot wrap to 0 and loop forever.
+  uint64_t next = *capacity ? *capacity : 64;
   while (next < needed) next *= 2;
+  if (next > UINT32_MAX) next = UINT32_MAX;
   TFVisibleChild *grown = realloc(*array, next * sizeof(TFVisibleChild));
   if (!grown) return false;
   *array = grown;
-  *capacity = next;
+  *capacity = (uint32_t)next;
   return true;
 }
 

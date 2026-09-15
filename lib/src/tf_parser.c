@@ -50,14 +50,16 @@ typedef struct {
 
 static bool tf_parser__grow(TFParser *self, uint32_t needed) {
   if (needed <= self->capacity) return true;
-  uint32_t capacity = self->capacity ? self->capacity : 64;
+  // 64-bit, so doubling past 2^31 cannot wrap to 0 and loop forever.
+  uint64_t capacity = self->capacity ? self->capacity : 64;
   while (capacity < needed) capacity *= 2;
+  if (capacity > UINT32_MAX) capacity = UINT32_MAX;
   TSStateId *states = realloc(self->states, (capacity + 1) * sizeof(TSStateId));
   TFNode *nodes = realloc(self->nodes, capacity * sizeof(TFNode));
   if (states) self->states = states;
   if (nodes) self->nodes = nodes;
   if (!states || !nodes) return false;
-  self->capacity = capacity;
+  self->capacity = (uint32_t)capacity;
   return true;
 }
 
