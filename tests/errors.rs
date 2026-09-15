@@ -5,10 +5,13 @@
 //! goes wrong is checked against libtree-sitter in `differential.rs`, which has
 //! a reference tree to compare against; here the concern is only that a failure
 //! is reported at all and is usable.
+use std::sync::OnceLock;
 use tree_feller::{Child, Language, Node, ParseError};
 
 fn parse(source: &str) -> Result<usize, ParseError> {
-    let language = Language::new(tree_sitter_c::LANGUAGE).expect("tables load");
+    static LANGUAGE: OnceLock<Language> = OnceLock::new();
+    let language =
+        LANGUAGE.get_or_init(|| Language::new(tree_sitter_c::LANGUAGE).expect("tables load"));
     language.parse(
         source.as_bytes(),
         |_: Node<'_>, c: &mut Vec<Child<usize>>| c.drain(..).map(|k| k.value).sum::<usize>() + 1,
@@ -20,10 +23,12 @@ const MALFORMED: &[&str] = &[
     "int a[] = {1, 2",             // unterminated initialiser
     "char *s = \"unterminated",    // unterminated string
     "struct S { int a; ",          // unterminated struct
+    "struct { int a; ",            // unterminated anonymous struct
     "int f(void) { return 0;",     // unterminated body
     "int f(void) { return 0; } }", // stray brace
     "int int x;",                  // a token that lexes but has no action here
     "@",                           // unlexable
+    "int 1x = 2;",                 // a number where a declarator belongs
 ];
 
 const WELL_FORMED: &[&str] = &[

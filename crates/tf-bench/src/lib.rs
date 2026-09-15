@@ -4,7 +4,26 @@
 //! reached through an `extern`, which lives here rather than in the bench itself
 //! so the crate records the dependency on the archive: referenced only from a
 //! bench target, the linker drops it and the symbol comes out undefined.
-use tree_feller::LanguageFn;
+use tree_feller::{Child, LanguageFn, Node, Visit};
+
+/// Everything the benchmarks might run against. A grammar `build.rs` could not
+/// fetch or generate is skipped rather than failing the run.
+pub const CASES: &[&str] = &["datazinc", "json", "minizinc", "c", "go", "solidity"];
+
+/// Counts nodes, and folds hidden runs when asked. Deliberately cheap: the
+/// point is to measure the parser, not a consumer.
+pub struct Count {
+    pub fold: bool,
+}
+
+impl Visit<usize> for Count {
+    fn node(&mut self, _node: Node<'_>, children: &mut Vec<Child<usize>>) -> usize {
+        children.drain(..).map(|c| c.value).sum::<usize>() + 1
+    }
+    fn hidden(&mut self, _node: Node<'_>, children: &mut Vec<Child<usize>>) -> Option<usize> {
+        self.fold.then(|| children.drain(..).map(|c| c.value).sum())
+    }
+}
 
 extern "C" {
     /// Regenerated at ABI 15 by `build.rs`; see there for why it is not a crate.
@@ -40,6 +59,9 @@ pub fn find(name: &str) -> Option<LanguageFn> {
 /// to put in a repository, and generating means the numbers do not move because
 /// someone edited a fixture.
 pub mod inputs {
+    // Writing to a `String` cannot fail.
+    use std::fmt::Write;
+
     /// A data file: a handful of long arrays, which is what `.dzn` mostly is and
     /// where the visible layer's memory behaviour actually matters.
     pub fn dzn(bytes: usize) -> String {
@@ -47,13 +69,13 @@ pub mod inputs {
         let mut n: u32 = 0;
         let mut array = 0;
         while out.len() < bytes {
-            out.push_str(&format!("data{array} = ["));
+            write!(out, "data{array} = [").unwrap();
             for i in 0..20_000 {
                 if i > 0 {
                     out.push(',');
                 }
                 n = n.wrapping_mul(1_103_515_245).wrapping_add(12_345);
-                out.push_str(&(n >> 16).to_string());
+                write!(out, "{}", n >> 16).unwrap();
             }
             out.push_str("];\n");
             array += 1;
@@ -71,12 +93,14 @@ pub mod inputs {
             }
             first = false;
             n = n.wrapping_mul(1_103_515_245).wrapping_add(12_345);
-            out.push_str(&format!(
+            write!(
+                out,
                 "{{\"id\":{},\"name\":\"item-{}\",\"tags\":[\"a\",\"b\"],\"ok\":true,\"score\":{}.5}}",
                 n >> 16,
                 n % 1000,
                 n % 97
-            ));
+            )
+            .unwrap();
         }
         out.push_str("]}");
         out
@@ -139,7 +163,12 @@ pub mod inputs {
         let mut out = String::with_capacity(bytes + unit.len());
         let mut i = 0usize;
         while out.len() < bytes {
-            out.push_str(&unit.replace("__N__", &i.to_string()));
+            for (k, piece) in unit.split("__N__").enumerate() {
+                if k > 0 {
+                    write!(out, "{i}").unwrap();
+                }
+                out.push_str(piece);
+            }
             i += 1;
         }
         out

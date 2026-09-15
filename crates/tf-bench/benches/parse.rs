@@ -12,30 +12,12 @@
 //! Building the input and loading the tables happen outside the timed closure,
 //! so what is measured is the parse.
 use divan::{counter::BytesCount, Bencher};
-use tree_feller::{Child, Language, Node, Options, Visit};
+use tf_bench::{Count, CASES};
+use tree_feller::{Language, Options};
 
 fn main() {
     divan::main();
 }
-
-/// Counts nodes, and folds hidden runs when asked. Deliberately cheap: the
-/// point is to measure the parser, not a consumer.
-struct Count {
-    fold: bool,
-}
-
-impl Visit<usize> for Count {
-    fn node(&mut self, _node: Node<'_>, children: &mut Vec<Child<usize>>) -> usize {
-        children.drain(..).map(|c| c.value).sum::<usize>() + 1
-    }
-    fn hidden(&mut self, _node: Node<'_>, children: &mut Vec<Child<usize>>) -> Option<usize> {
-        self.fold.then(|| children.drain(..).map(|c| c.value).sum())
-    }
-}
-
-/// Everything the benchmarks might run against. A grammar `build.rs` could not
-/// fetch or generate is skipped rather than failing the run.
-const CASES: &[&str] = &["datazinc", "json", "minizinc", "c", "go", "solidity"];
 
 const SIZE: usize = 512 * 1024;
 
@@ -43,12 +25,7 @@ const SIZE: usize = 512 * 1024;
 /// available in this build.
 fn case(name: &str) -> Option<(Language, String)> {
     let language = Language::new(tf_bench::find(name)?).expect("tables load");
-    let source = tf_bench::inputs::of(name, SIZE);
-    // A benchmark that does not parse is broken, not slow.
-    language
-        .parse(source.as_bytes(), Count { fold: false })
-        .unwrap_or_else(|e| panic!("{name}: benchmark input does not parse: {e}"));
-    Some((language, source))
+    Some((language, tf_bench::inputs::of(name, SIZE)))
 }
 
 /// What a CST walk gives: every node, punctuation included, nothing folded.
@@ -60,9 +37,10 @@ fn visible(bencher: Bencher, name: &str) {
     bencher
         .counter(BytesCount::of_slice(source.as_bytes()))
         .bench_local(|| {
+            // A benchmark that does not parse is broken, not slow.
             language
                 .parse(source.as_bytes(), Count { fold: false })
-                .unwrap()
+                .unwrap_or_else(|e| panic!("{name}: benchmark input does not parse: {e}"))
         });
 }
 
@@ -79,6 +57,6 @@ fn named_folded(bencher: Bencher, name: &str) {
         .bench_local(|| {
             language
                 .parse_with(source.as_bytes(), options, Count { fold: true })
-                .unwrap()
+                .unwrap_or_else(|e| panic!("{name}: benchmark input does not parse: {e}"))
         });
 }

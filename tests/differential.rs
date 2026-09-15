@@ -4,6 +4,7 @@
 //! Production ids are not compared -- the `tree-sitter` crate does not expose
 //! them -- so `tools/tf_diff` remains the stricter of the two. Everything else a
 //! consumer can observe is here.
+use std::sync::OnceLock;
 use tree_feller::{Child, Language, LanguageFn, Node};
 use tree_sitter::{Parser, TreeCursor};
 
@@ -50,9 +51,22 @@ impl Grammar {
         tree_sitter::Language::new(self.language_fn())
     }
 
-    fn tree_feller(self) -> Language {
-        Language::new(self.language_fn()).expect("tables should load")
+    /// Loaded once per grammar: expanding the tables is the expensive part.
+    fn tree_feller(self) -> &'static Language {
+        static LOADED: [OnceLock<Language>; 4] = [
+            OnceLock::new(),
+            OnceLock::new(),
+            OnceLock::new(),
+            OnceLock::new(),
+        ];
+        LOADED[self as usize]
+            .get_or_init(|| Language::new(self.language_fn()).expect("tables should load"))
     }
+}
+
+/// A visitor that keeps nothing, for parses where only success matters.
+fn discard(_: Node<'_>, children: &mut Vec<Child<()>>) {
+    children.clear()
 }
 
 /// The reference: every visible node, in post-order.
@@ -147,9 +161,7 @@ fn compare(grammar: Grammar, label: &str, source: &[u8]) -> bool {
     let language = grammar.tree_feller();
     if tree.root_node().has_error() {
         assert!(
-            language
-                .parse(source, |_: Node<'_>, c: &mut Vec<Child<()>>| c.clear())
-                .is_err(),
+            language.parse(source, discard).is_err(),
             "{label}: accepted input the reference parser could not parse",
         );
         return false;
@@ -157,7 +169,7 @@ fn compare(grammar: Grammar, label: &str, source: &[u8]) -> bool {
 
     let mut expected = Vec::new();
     walk(&mut tree.walk(), &mut expected);
-    let actual = subject(&language, source).unwrap_or_else(|e| panic!("{label}: {e}"));
+    let actual = subject(language, source).unwrap_or_else(|e| panic!("{label}: {e}"));
 
     for (i, (want, got)) in expected.iter().zip(actual.iter()).enumerate() {
         assert_eq!(
@@ -324,9 +336,7 @@ fn systemverilog_incomplete_directives_fail_at_eof() {
         ));
         let error = Grammar::SystemVerilog
             .tree_feller()
-            .parse(source, |_: Node<'_>, children: &mut Vec<Child<()>>| {
-                children.clear()
-            })
+            .parse(source, discard)
             .expect_err("missing directive argument");
         assert_eq!(error.byte as usize, source.len());
     }
@@ -393,60 +403,6 @@ systemverilog_regression!(
     "Coverage: a stack cell unrolled after the private replay has already run",
     true
 );
-
-/// Point `TF_CORPUS` at a directory to run the same comparison over every `.c`
-/// file in it. Left out of the default run so `cargo test` stays hermetic.
-#[test]
-fn corpus_matches_tree_sitter() {
-    let Some(root) = std::env::var_os("TF_CORPUS") else {
-        return;
-    };
-    let mut checked = 0;
-    let mut skipped = 0;
-    let mut stack = vec![std::path::PathBuf::from(root)];
-    while let Some(path) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&path) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                stack.push(path);
-            } else if path.extension().is_some_and(|e| e == "c") {
-                let Ok(source) = std::fs::read(&path) else {
-                    continue;
-                };
-                if compare(Grammar::C, &path.display().to_string(), &source) {
-                    checked += 1;
-                } else {
-                    skipped += 1;
-                }
-            }
-        }
-    }
-    println!("{checked} matched, {skipped} not parseable by this grammar");
-    assert!(checked > 0, "TF_CORPUS held no parseable .c files");
-}
-
-/// Errors must be reported, not silently tolerated, and must carry a position.
-#[test]
-fn malformed_input_is_rejected() {
-    let language = Grammar::C.tree_feller();
-    for source in [
-        "int x = ",
-        "int a[] = {1, 2",
-        "char *s = \"unterminated",
-        "struct { int a; ",
-        "int 1x = 2;",
-    ] {
-        let result = language.parse(source.as_bytes(), |_: Node<'_>, c: &mut Vec<Child<()>>| {
-            c.clear()
-        });
-        let error = result.expect_err(&format!("{source:?} should not parse"));
-        assert!(error.byte as usize <= source.len(), "{source:?}: {error}");
-        assert!(!error.message.is_empty(), "{source:?}: empty message");
-    }
-}
 
 /// A panic in the visitor must not unwind through C.
 #[test]

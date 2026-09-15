@@ -9,13 +9,12 @@
 //! whole-process high-water mark needs one process per measurement. See
 //! `RESULTS.md`.
 use divan::{counter::BytesCount, Bencher};
-use tree_feller::{Child, Language, Node};
+use tf_bench::{Count, CASES};
+use tree_feller::Language;
 
 fn main() {
     divan::main();
 }
-
-const CASES: &[&str] = &["datazinc", "json", "minizinc", "c", "go", "solidity"];
 
 fn source_for(name: &str) -> String {
     // Deliberately smaller than in `parse.rs`: libtree-sitter allocates a
@@ -34,12 +33,7 @@ fn tree_feller(bencher: Bencher, name: &str) {
         .counter(BytesCount::of_slice(source.as_bytes()))
         .bench_local(|| {
             language
-                .parse(
-                    source.as_bytes(),
-                    |_: Node<'_>, c: &mut Vec<Child<usize>>| {
-                        c.drain(..).map(|k| k.value).sum::<usize>() + 1
-                    },
-                )
+                .parse(source.as_bytes(), Count { fold: false })
                 .unwrap()
         });
 }

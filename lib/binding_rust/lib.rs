@@ -228,6 +228,17 @@ fn message_of(error: &ffi::TFError) -> String {
         .into_owned()
 }
 
+// A name out of the language's tables, or `None` for a null pointer.
+//
+// Safety: `name` is null or a C string that lives as long as `'a`, which for
+// names is the `Language` they were read from.
+unsafe fn name_of<'a>(name: *const std::ffi::c_char) -> Option<&'a str> {
+    if name.is_null() {
+        return None;
+    }
+    CStr::from_ptr(name).to_str().ok()
+}
+
 // ---------------------------------------------------------------------------
 
 // Values live here while the parser holds them, because it can only carry a
@@ -299,9 +310,6 @@ struct State<V, T: Visit<V>> {
     visit: T,
     values: Slab<V>,
     children: Vec<Child<V>>,
-    // The slab handles behind `children`, kept so a declined fold can put them
-    // back exactly where they were.
-    handles: Vec<*mut c_void>,
     panic: Option<Box<dyn std::any::Any + Send>>,
 }
 
@@ -322,29 +330,30 @@ unsafe fn dispatch<V, T: Visit<V>>(
 
     let result = catch_unwind(AssertUnwindSafe(|| {
         state.children.clear();
-        state.handles.clear();
         let mark = state.values.mark();
-        if raw.child_count > 0 {
-            let slice = std::slice::from_raw_parts(raw.children, raw.child_count as usize);
-            state.children.reserve(slice.len());
-            for child in slice {
-                if fold {
-                    state.handles.push(child.value);
-                }
-                // A child with no value cannot happen: every visible node was
-                // reported before its parent. If it ever does, it is a bug here,
-                // not something to paper over.
-                let value = state
-                    .values
-                    .take(child.value)
-                    .expect("child reported without a value");
-                state.children.push(Child {
-                    symbol: child.symbol,
-                    field_id: child.field_id,
-                    extra: child.extra,
-                    value,
-                });
-            }
+        // The C array stays valid for the whole callback, and it also records
+        // the slab handle each child arrived with. `children` may be null when
+        // there are none, which `from_raw_parts` does not allow.
+        let slice = if raw.child_count > 0 {
+            std::slice::from_raw_parts(raw.children, raw.child_count as usize)
+        } else {
+            &[]
+        };
+        state.children.reserve(slice.len());
+        for child in slice {
+            // A child with no value cannot happen: every visible node was
+            // reported before its parent. If it ever does, it is a bug here,
+            // not something to paper over.
+            let value = state
+                .values
+                .take(child.value)
+                .expect("child reported without a value");
+            state.children.push(Child {
+                symbol: child.symbol,
+                field_id: child.field_id,
+                extra: child.extra,
+                value,
+            });
         }
         let handed = Node { raw };
         let value = if fold {
@@ -362,8 +371,8 @@ unsafe fn dispatch<V, T: Visit<V>>(
             None => {
                 // Declined. The driver will leave the run alone, so every child
                 // has to go back under the handle it arrived with.
-                for (child, handle) in state.children.drain(..).zip(state.handles.drain(..)) {
-                    state.values.restore(handle, child.value);
+                for (child, raw_child) in state.children.drain(..).zip(slice) {
+                    state.values.restore(raw_child.value, child.value);
                 }
                 state.values.rollback(mark);
                 std::ptr::null_mut()
@@ -448,20 +457,12 @@ impl Language {
 
     /// The symbol's name, for diagnostics. `None` if `symbol` is out of range.
     pub fn symbol_name(&self, symbol: u16) -> Option<&str> {
-        let name = unsafe { ffi::tf_language_symbol_name(self.raw, symbol) };
-        if name.is_null() {
-            return None;
-        }
-        unsafe { CStr::from_ptr(name) }.to_str().ok()
+        unsafe { name_of(ffi::tf_language_symbol_name(self.raw, symbol)) }
     }
 
     /// The field's name, for diagnostics. `None` if `field` is out of range.
     pub fn field_name(&self, field: u16) -> Option<&str> {
-        let name = unsafe { ffi::tf_language_field_name(self.raw, field) };
-        if name.is_null() {
-            return None;
-        }
-        unsafe { CStr::from_ptr(name) }.to_str().ok()
+        unsafe { name_of(ffi::tf_language_field_name(self.raw, field)) }
     }
 
     /// Reports each node to `visitor` and returns its root value.
@@ -485,7 +486,6 @@ impl Language {
             visit: visitor,
             values: Slab::new(),
             children: Vec::new(),
-            handles: Vec::new(),
             panic: None,
         };
         let sink = ffi::TFVisibleSink {

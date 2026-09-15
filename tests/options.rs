@@ -1,11 +1,12 @@
 //! `Visit::hidden` and `Options::named_only`, the two knobs that change what a
 //! parse reports.
 //!
-//! The invariant worth pinning is the same one `tests/test_fold.c` pins on the C
-//! side: folding a hidden run changes what a *parent* is handed and nothing
-//! else, so the set of visible nodes is identical either way. Declining a fold
-//! has to leave the run exactly as it was, which is the fiddly path -- the
-//! children have already been taken out of the value slab by then.
+//! The invariant worth pinning: folding a hidden run changes what a *parent* is
+//! handed and nothing else, so the set of visible nodes is identical either
+//! way. Declining a fold has to leave the run exactly as it was, which is the
+//! fiddly path -- the children have already been taken out of the value slab
+//! by then.
+use std::sync::OnceLock;
 use tree_feller::{Child, Language, Node, Options, Visit};
 
 /// Records every node it is shown, and folds hidden runs only when told to.
@@ -32,7 +33,8 @@ impl Visit<usize> for Recorder {
 }
 
 fn run(source: &[u8], fold: bool, named_only: bool) -> (Vec<(u16, u32, u32)>, usize, usize) {
-    let language = Language::new(tree_sitter_c::LANGUAGE).unwrap();
+    static LANGUAGE: OnceLock<Language> = OnceLock::new();
+    let language = LANGUAGE.get_or_init(|| Language::new(tree_sitter_c::LANGUAGE).unwrap());
     let mut recorder = Recorder {
         seen: Vec::new(),
         folds: 0,
@@ -70,27 +72,22 @@ fn folding_reports_the_same_visible_nodes() {
     // offer is only required to happen somewhere in the set.
     let mut offered = 0;
     for source in SOURCES {
-        let (plain, declined, _) = run(source.as_bytes(), false, false);
-        let (folded, taken, _) = run(source.as_bytes(), true, false);
+        let (plain, declined, plain_total) = run(source.as_bytes(), false, false);
+        let (folded, taken, folded_total) = run(source.as_bytes(), true, false);
         assert_eq!(declined, 0, "{source:?}: a declined fold was counted");
         offered += taken;
         assert_eq!(plain, folded, "{source:?}: folding changed the node stream");
+        // Declining leaves the run in place, so the parent still sees every
+        // member. This is what breaks if the value slab is not restored.
+        assert_eq!(
+            plain_total, folded_total,
+            "{source:?}: a child went missing"
+        );
     }
     assert!(
         offered > 0,
         "nothing in the corpus was ever offered to fold"
     );
-}
-
-/// Declining leaves the run in place, so the parent still sees every member and
-/// the totals match. This is what breaks if the value slab is not restored.
-#[test]
-fn declining_a_fold_keeps_every_child() {
-    for source in SOURCES {
-        let (_, _, plain) = run(source.as_bytes(), false, false);
-        let (_, _, folded) = run(source.as_bytes(), true, false);
-        assert_eq!(plain, folded, "{source:?}: a child went missing");
-    }
 }
 
 #[test]
