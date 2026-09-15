@@ -58,13 +58,6 @@ typedef struct {
   // symbol, allocated only if a fold is declined at all.
   uint8_t *declined;
 
-  // The most recent reduction. The last one is the root's, and the root has no
-  // parent to describe it -- the driver hands back only the packed value.
-  TSSymbol root_symbol;
-  uint16_t root_production_id;
-  uint32_t root_start_byte, root_end_byte;
-  TFPoint root_start_point, root_end_point;
-
   bool failed;
 } TFFilter;
 
@@ -126,6 +119,22 @@ static const TFVisibleChild tf_filter__no_children;
 
 static const TFVisibleChild *tf_filter__run(const TFFilter *self, uint32_t position) {
   return self->arena ? &self->arena[position] : &tf_filter__no_children;
+}
+
+// The node for a reduction itself, over the run it owns from `base`.
+static TFVisibleNode tf_filter__parent(const TFFilter *self, const TFReduction *reduction,
+                                       bool named, uint32_t base) {
+  return (TFVisibleNode){
+      .symbol = tf_public_symbol(self->lang, reduction->symbol),
+      .production_id = reduction->production_id,
+      .named = named,
+      .start_byte = reduction->start_byte,
+      .end_byte = reduction->end_byte,
+      .start_point = reduction->start_point,
+      .end_point = reduction->end_point,
+      .child_count = self->arena_len - base,
+      .children = tf_filter__run(self, base),
+  };
 }
 
 static bool tf_filter__reserve(TFVisibleChild **array, uint32_t *capacity, uint32_t needed) {
@@ -305,18 +314,7 @@ static void *tf_filter__on_reduce(void *payload, const TFReduction *reduction) {
   uint32_t owned = self->arena_len - base;
   if (owned > 1 && self->sink->on_hidden && tf_foldable(lang, reduction->symbol) &&
       !(self->declined && self->declined[reduction->symbol])) {
-    TFVisibleNode node = {
-        .symbol = tf_public_symbol(lang, reduction->symbol),
-        .production_id = production_id,
-        .named = false,
-        .extra = false,
-        .start_byte = reduction->start_byte,
-        .end_byte = reduction->end_byte,
-        .start_point = reduction->start_point,
-        .end_point = reduction->end_point,
-        .child_count = owned,
-        .children = tf_filter__run(self, base),
-    };
+    TFVisibleNode node = tf_filter__parent(self, reduction, false, base);
     void *folded = self->sink->on_hidden(self->sink->payload, &node);
     if (folded) {
       self->arena[base] = (TFVisibleChild){.symbol = node.symbol, .value = folded};
@@ -332,14 +330,18 @@ static void *tf_filter__on_reduce(void *payload, const TFReduction *reduction) {
     }
   }
 
-  // The last reduction to happen is the root's, so keeping the most recent one
-  // is enough to describe it later.
-  self->root_symbol = reduction->symbol;
-  self->root_production_id = production_id;
-  self->root_start_byte = reduction->start_byte;
-  self->root_end_byte = reduction->end_byte;
-  self->root_start_point = reduction->start_point;
-  self->root_end_point = reduction->end_point;
+  // The root has no parent to judge it, so it is emitted on its own terms. It is
+  // the one reduction whose last child is the end token (tf_parser__reduce), and
+  // what it returns is the value tf_parse hands back.
+  if (reduction->node_count > 0 &&
+      reduction->children[reduction->node_count - 1].symbol == ts_builtin_sym_end) {
+    TSSymbolMetadata metadata = tf_symbol_metadata(lang, reduction->symbol);
+    if (!metadata.visible || !self->sink->on_node) {
+      return NULL;
+    }
+    TFVisibleNode node = tf_filter__parent(self, reduction, metadata.named, base);
+    return self->sink->on_node(self->sink->payload, &node);
+  }
 
   return tf_filter__store_cell(self, self->arena_len - base, production_id);
 }
@@ -361,30 +363,8 @@ bool tf_parse_visible(const TFLanguage *lang, const void *source, size_t size,
     }
   }
 
-  // The root has no parent to judge it, so it is emitted on its own terms.
-  if (ok && raw_root) {
-    uint32_t owns = tf_filter__cell(&self, raw_root).children;
-    TSSymbolMetadata metadata = tf_symbol_metadata(lang, self.root_symbol);
-    void *value = NULL;
-    if (metadata.visible && self.sink->on_node) {
-      TFVisibleNode node = {
-          .symbol = tf_public_symbol(lang, self.root_symbol),
-          .production_id = self.root_production_id,
-          .named = metadata.named,
-          .start_byte = self.root_start_byte,
-          .end_byte = self.root_end_byte,
-          .start_point = self.root_start_point,
-          .end_point = self.root_end_point,
-          .child_count = owns,
-          .children = tf_filter__run(&self, self.arena_len - owns),
-      };
-      value = self.sink->on_node(self.sink->payload, &node);
-    }
-    if (root) {
-      *root = value;
-    }
-  } else if (root) {
-    *root = NULL;
+  if (root) {
+    *root = ok ? raw_root : NULL;
   }
 
   // Same as the driver: on failure the consumer never sees a root, so hand back
