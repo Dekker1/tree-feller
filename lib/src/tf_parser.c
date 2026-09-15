@@ -22,11 +22,6 @@ typedef struct {
   uint32_t depth;
   uint32_t capacity;
 
-  // Extras sitting above the last real child of a reduction: excluded from it,
-  // then re-pushed above the new parent (parser.c:/trailing_extras/).
-  TFNode *trailing;
-  uint32_t trailing_capacity;
-
   // parser.c:/ts_parser__accept/ rebuilds the root node to absorb the trailing
   // extras above it plus the end token, so the reduction that produces the root
   // is held back until the end token arrives and can be included.
@@ -222,23 +217,18 @@ static bool tf_parser__reduce(TFParser *self, TSSymbol symbol, uint32_t child_co
       .value = is_root ? NULL : tf_parser__emit_reduce(self, &reduction),
   };
 
-  if (trailing_count > self->trailing_capacity) {
-    TFNode *trailing = realloc(self->trailing, trailing_count * sizeof(TFNode));
-    if (!trailing) return false;
-    self->trailing = trailing;
-    self->trailing_capacity = trailing_count;
-  }
+  // The parent takes the cell at `base`, and the trailing extras excluded from it
+  // sit directly on top in the new state (parser.c:/trailing_extras/). They move
+  // down, or up by one above an empty production, so the regions can overlap.
+  if (!tf_parser__grow(self, base + 1 + trailing_count)) return false;
   // Almost always zero -- a data file is mostly not comments -- and the call is
   // not free at one per reduction.
   if (trailing_count > 0) {
-    memcpy(self->trailing, &self->nodes[end], trailing_count * sizeof(TFNode));
+    memmove(&self->nodes[base + 1], &self->nodes[end], trailing_count * sizeof(TFNode));
   }
-
-  self->depth = base;
-  if (!tf_parser__push(self, parent, state)) return false;
-  for (uint32_t i = 0; i < trailing_count; i++) {
-    if (!tf_parser__push(self, self->trailing[i], state)) return false;
-  }
+  self->nodes[base] = parent;
+  self->depth = base + 1 + trailing_count;
+  for (uint32_t i = base + 1; i <= self->depth; i++) self->states[i] = state;
   return true;
 }
 
@@ -409,7 +399,6 @@ done:
   }
   free(self.states);
   free(self.nodes);
-  free(self.trailing);
   free(self.root.children);
   tf_spec__free(self.spec);
   return ok;
