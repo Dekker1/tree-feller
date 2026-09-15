@@ -4,8 +4,6 @@
 // tf_lexer.h for what the single-buffer, no-included-ranges case leaves out.
 #include "tf_lexer.h"
 
-#include <stdarg.h>
-
 #include "tf_utf8.h"
 
 #define TF_BOM 0xFEFF

@@ -28,12 +28,6 @@ typedef struct {
 } TFVisibleCell;
 
 #if UINTPTR_MAX >= UINT64_MAX && !defined(TF_VISIBLE_FORCE_CELL_ARENA)
-// The tag bit keeps the value non-NULL, which the driver treats as "no value".
-// NOLINTBEGIN(performance-no-int-to-ptr): the pointer is the storage, not a
-// pointer to it. That is the whole point -- see above.
-#define TF_PACK(children, production) \
-  ((void *)(((uintptr_t)(children) << 17) | ((uintptr_t)(production) << 1) | 1u))
-// NOLINTEND(performance-no-int-to-ptr)
 #define TF_USE_PACKED_CELLS 1
 #else
 #define TF_USE_PACKED_CELLS 0
@@ -90,7 +84,10 @@ static TFVisibleCell tf_filter__cell(const TFFilter *self, const void *value) {
 static void *tf_filter__store_cell(TFFilter *self, uint32_t children, uint16_t production) {
 #if TF_USE_PACKED_CELLS
   (void)self;
-  return TF_PACK(children, production);
+  // The pointer is the storage, not a pointer to it. The tag bit keeps it
+  // non-NULL, which the driver treats as "no value".
+  // NOLINTNEXTLINE(performance-no-int-to-ptr)
+  return (void *)(((uintptr_t)children << 17) | ((uintptr_t)production << 1) | 1U);
 #else
   if (self->cells_len == UINT32_MAX) {
     self->failed = true;
@@ -118,18 +115,9 @@ static void *tf_filter__store_cell(TFFilter *self, uint32_t children, uint16_t p
 #endif
 }
 
-// The run of settled entries at `position`, as the sink sees it.
-//
-// A node with no visible children is reported before the arena has ever been
-// allocated -- the very first reduction of a parse, if its children are all
-// hidden -- and `&arena[0]` on a null arena is undefined. clang 18's
-// UndefinedBehaviorSanitizer calls it "applying zero offset to null pointer";
-// Apple clang and gcc do not report it, which is why it stood for so long.
-//
-// It stands in for an empty run rather than a null because `children` is
-// documented as a pointer to `child_count` entries: a null would be a licence
-// for `memcpy(dst, node->children, 0)` in a consumer to be undefined in turn,
-// and Rust's `slice::from_raw_parts` requires non-null even for an empty slice.
+// The run of settled entries at `position`, as the sink sees it. The arena can
+// still be null here (`&arena[0]` would be UB), and an empty run is non-null
+// because consumers may memcpy from it and Rust's `from_raw_parts` requires it.
 static const TFVisibleChild tf_filter__no_children;
 
 static const TFVisibleChild *tf_filter__run(const TFFilter *self, uint32_t position) {
@@ -165,9 +153,7 @@ static void *tf_filter__on_reduce(void *payload, const TFReduction *reduction) {
   // The alias and field rows for this production, resolved once. The sink's
   // callbacks are opaque, so every `lang->...` load inside the loops below is
   // otherwise repeated after each one -- five chained loads per child.
-  const TSSymbol *alias_row =
-      production_id ? &ts->alias_sequences[(size_t)production_id * ts->max_alias_sequence_length]
-                    : NULL;
+  const TSSymbol *alias_row = tf_alias_sequence(lang, production_id);
   uint32_t field_width = lang->field_at_width;
   const TSFieldId *field_row =
       field_width ? &lang->field_at[(size_t)production_id * field_width] : NULL;
@@ -304,19 +290,13 @@ static void *tf_filter__on_reduce(void *payload, const TFReduction *reduction) {
         .children = tf_filter__run(self, base),
     };
     void *folded = self->sink->on_hidden(self->sink->payload, &node);
-    if (!folded) {
-      // Declined. Take that as the answer for this symbol and stop asking.
-      if (!self->declined) self->declined = calloc(lang->ts->symbol_count, sizeof(uint8_t));
-      if (self->declined) self->declined[reduction->symbol] = 1;
-    }
     if (folded) {
-      self->arena[base] = (TFVisibleChild){
-          .symbol = node.symbol,
-          .field_id = 0,
-          .extra = false,
-          .value = folded,
-      };
+      self->arena[base] = (TFVisibleChild){.symbol = node.symbol, .value = folded};
       self->arena_len = base + 1;
+    } else {
+      // Declined. Take that as the answer for this symbol and stop asking.
+      if (!self->declined) self->declined = calloc(ts->symbol_count, sizeof(uint8_t));
+      if (self->declined) self->declined[reduction->symbol] = 1;
     }
   }
 

@@ -56,10 +56,7 @@ TFLanguage *tf_language_load(const TSLanguage *ts, const char **error) {
     return NULL;
   }
   TFLanguage *self = calloc(1, sizeof(TFLanguage));
-  if (!self) {
-    *error = "out of memory";
-    return NULL;
-  }
+  if (!self) goto oom;
   self->ts = ts;
 
   // A 0xFFFF lex state marks a non-terminal extra rule, where the parser takes a
@@ -68,8 +65,7 @@ TFLanguage *tf_language_load(const TSLanguage *ts, const char **error) {
   for (uint32_t state = 0; state < ts->state_count; state++) {
     if (ts->lex_modes[state].lex_state == UINT16_MAX) {
       *error = "grammars with non-terminal extras are not supported";
-      tf_language_free(self);
-      return NULL;
+      goto fail;
     }
   }
 
@@ -90,16 +86,11 @@ TFLanguage *tf_language_load(const TSLanguage *ts, const char **error) {
   size_t cells = (size_t)ts->state_count * ts->symbol_count;
   if (cells > (size_t)64 * 1024 * 1024) {
     *error = "parse table is too large to expand";
-    tf_language_free(self);
-    return NULL;
+    goto fail;
   }
   // Zeroed, because 0 is what a miss returns in the packed table too.
   uint16_t *dense = calloc(cells, sizeof(uint16_t));
-  if (!dense) {
-    *error = "out of memory";
-    tf_language_free(self);
-    return NULL;
-  }
+  if (!dense) goto oom;
   self->dense = dense;
   // Dense states are already in this layout.
   memcpy(dense, ts->parse_table,
@@ -133,11 +124,7 @@ TFLanguage *tf_language_load(const TSLanguage *ts, const char **error) {
   self->field_at_width = width;
   if (width > 0) {
     TSFieldId *field_at = calloc((size_t)ts->production_id_count * width, sizeof(TSFieldId));
-    if (!field_at) {
-      *error = "out of memory";
-      tf_language_free(self);
-      return NULL;
-    }
+    if (!field_at) goto oom;
     self->field_at = field_at;
     const TSFieldMapEntry *entry, *end;
     for (uint32_t production = 0; production < ts->production_id_count; production++) {
@@ -155,11 +142,7 @@ TFLanguage *tf_language_load(const TSLanguage *ts, const char **error) {
   // renamed by its parent's production, so it cannot be treated as reliably
   // hidden.
   uint8_t *aliasable = calloc(ts->symbol_count, sizeof(uint8_t));
-  if (!aliasable) {
-    *error = "out of memory";
-    tf_language_free(self);
-    return NULL;
-  }
+  if (!aliasable) goto oom;
   self->aliasable = aliasable;
   for (unsigned idx = 0;;) {
     TSSymbol symbol = ts->alias_map[idx++];
@@ -169,13 +152,9 @@ TFLanguage *tf_language_load(const TSLanguage *ts, const char **error) {
     idx += count;
   }
 
-  self->action_entry_count = tf_language__action_table_extent(ts, self);
-  uint8_t *counts = calloc(self->action_entry_count, sizeof(uint8_t));
-  if (!counts) {
-    *error = "out of memory";
-    tf_language_free(self);
-    return NULL;
-  }
+  uint32_t extent = tf_language__action_table_extent(ts, self);
+  uint8_t *counts = calloc(extent, sizeof(uint8_t));
+  if (!counts) goto oom;
   self->action_counts = counts;
 
   // Fill in the filtered counts. Truncating the count only works if the kept
@@ -187,10 +166,9 @@ TFLanguage *tf_language_load(const TSLanguage *ts, const char **error) {
       if (index == 0) continue;
       // The table said an action lives past the end of the action table. Nothing
       // this library does can make sense of that, so do not read it.
-      if (index >= self->action_entry_count) {
+      if (index >= extent) {
         *error = "parse table refers to an action index that does not exist";
-        tf_language_free(self);
-        return NULL;
+        goto fail;
       }
       if (counts[index] != 0) continue;
       uint32_t count = ts->parse_actions[index].entry.count;
@@ -200,8 +178,7 @@ TFLanguage *tf_language_load(const TSLanguage *ts, const char **error) {
       for (uint32_t i = kept; i < count; i++) {
         if (!tf_language__is_repeat_shift(actions[i])) {
           *error = "SHIFT_REPEAT actions are not trailing in an action entry";
-          tf_language_free(self);
-          return NULL;
+          goto fail;
         }
       }
       counts[index] = (uint8_t)kept;
@@ -212,11 +189,7 @@ TFLanguage *tf_language_load(const TSLanguage *ts, const char **error) {
   // across the loop in between.
   // NOLINTNEXTLINE(clang-analyzer-optin.portability.UnixAPI)
   uint8_t *accepts_end = calloc(ts->state_count, sizeof(uint8_t));
-  if (!accepts_end) {
-    *error = "out of memory";
-    tf_language_free(self);
-    return NULL;
-  }
+  if (!accepts_end) goto oom;
   self->accepts_end = accepts_end;
   for (uint32_t state = 0; state < ts->state_count; state++) {
     uint32_t count;
@@ -225,6 +198,12 @@ TFLanguage *tf_language_load(const TSLanguage *ts, const char **error) {
   }
 
   return self;
+
+oom:
+  *error = "out of memory";
+fail:
+  tf_language_free(self);
+  return NULL;
 }
 
 const char *tf_language_symbol_name(const TFLanguage *self, TSSymbol symbol) {

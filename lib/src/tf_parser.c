@@ -37,16 +37,13 @@ typedef struct {
   struct {
     bool pending;
     uint32_t base;
-    TSSymbol symbol;
-    uint16_t production_id;
-    uint32_t child_count;
-    uint32_t node_count;
+    // `children` points at the array below, which owns a copy of the stack cells.
+    TFReduction reduction;
     TFNode *children;
     uint32_t capacity;
   } root;
 
   TFError *error;
-  bool report_splits;
   uint32_t split_count;
   TFSpec *spec;
 } TFParser;
@@ -71,6 +68,14 @@ static bool tf_parser__push(TFParser *self, TFNode node, TSStateId state) {
   return true;
 }
 
+static inline void *tf_parser__emit_shift(const TFParser *self, const TFToken *token, bool extra) {
+  return self->sink->on_shift ? self->sink->on_shift(self->sink->payload, token, extra) : NULL;
+}
+
+static inline void *tf_parser__emit_reduce(const TFParser *self, const TFReduction *reduction) {
+  return self->sink->on_reduce ? self->sink->on_reduce(self->sink->payload, reduction) : NULL;
+}
+
 static bool tf_parser__shift(TFParser *self, const TFToken *token, bool extra, TSStateId state) {
   TFNode node = {
       .symbol = token->symbol,
@@ -79,8 +84,7 @@ static bool tf_parser__shift(TFParser *self, const TFToken *token, bool extra, T
       .end_byte = token->end_byte,
       .start_point = token->start_point,
       .end_point = token->end_point,
-      .value =
-          self->sink->on_shift ? self->sink->on_shift(self->sink->payload, token, extra) : NULL,
+      .value = tf_parser__emit_shift(self, token, extra),
   };
   if (extra && self->depth == self->leading) self->leading++;
   return tf_parser__push(self, node, state);
@@ -134,19 +138,7 @@ static void tf_parser__fail_unexpected(TFParser *self, TSStateId state, const TF
 // other than the end token turned out to follow it.
 static void *tf_parser__flush_root(TFParser *self) {
   self->root.pending = false;
-  const TFNode *node = &self->nodes[self->root.base];
-  TFReduction reduction = {
-      .symbol = self->root.symbol,
-      .production_id = self->root.production_id,
-      .child_count = self->root.child_count,
-      .node_count = self->root.node_count,
-      .children = self->root.children,
-      .start_byte = node->start_byte,
-      .end_byte = node->end_byte,
-      .start_point = node->start_point,
-      .end_point = node->end_point,
-  };
-  return self->sink->on_reduce ? self->sink->on_reduce(self->sink->payload, &reduction) : NULL;
+  return tf_parser__emit_reduce(self, &self->root.reduction);
 }
 
 // parser.c:/ts_parser__reduce/, with the GLR bookkeeping removed. Pops
@@ -215,10 +207,8 @@ static bool tf_parser__reduce(TFParser *self, TSSymbol symbol, uint32_t child_co
     }
     self->root.pending = true;
     self->root.base = base;
-    self->root.symbol = symbol;
-    self->root.production_id = production_id;
-    self->root.child_count = child_count;
-    self->root.node_count = reduction.node_count;
+    self->root.reduction = reduction;
+    self->root.reduction.children = self->root.children;
   }
 
   TFNode parent = {
@@ -227,12 +217,10 @@ static bool tf_parser__reduce(TFParser *self, TSSymbol symbol, uint32_t child_co
       .end_byte = reduction.end_byte,
       .start_point = reduction.start_point,
       .end_point = reduction.end_point,
-      .value = is_root                 ? NULL
-               : self->sink->on_reduce ? self->sink->on_reduce(self->sink->payload, &reduction)
-                                       : NULL,
+      .value = is_root ? NULL : tf_parser__emit_reduce(self, &reduction),
   };
 
-  if (trailing_count > 0 && trailing_count > self->trailing_capacity) {
+  if (trailing_count > self->trailing_capacity) {
     TFNode *trailing = realloc(self->trailing, trailing_count * sizeof(TFNode));
     if (!trailing) return false;
     self->trailing = trailing;
@@ -269,10 +257,7 @@ static bool tf_parser__demote_keyword(const TFLanguage *lang, TSStateId state, T
 static bool tf_parser__run(const TFLanguage *lang, const void *source, size_t size,
                            const TFSink *sink, void **root, TFError *error, TFSpec *capture) {
   static const TFSink no_sink = {0};
-  TFParser self = {.lang = lang,
-                   .sink = sink ? sink : &no_sink,
-                   .error = error,
-                   .report_splits = getenv("TF_SPLIT_STATS") != NULL};
+  TFParser self = {.lang = lang, .sink = sink ? sink : &no_sink, .error = error};
   if (error) *error = (TFError){0};
   if (root) *root = NULL;
   if (size > UINT32_MAX) {
@@ -318,9 +303,7 @@ static bool tf_parser__run(const TFLanguage *lang, const void *source, size_t si
                 0) {
           if (self.root.pending) self.nodes[self.root.base].value = tf_parser__flush_root(&self);
           if (capture->failed) goto done;
-          if (!tf_spec__reserve(capture, (void **)&capture->capture_id, &capture->capture_capacity,
-                                self.depth, sizeof(*capture->capture_id)))
-            goto done;
+          if (!TF_SPEC_RESERVE(capture, capture_id, capture_capacity, self.depth)) goto done;
           for (uint32_t i = 0; i < self.depth; i++)
             capture->capture_id[i] = (uint32_t)(uintptr_t)self.nodes[i].value - 1;
           capture->captured = true;
@@ -362,9 +345,10 @@ static bool tf_parser__run(const TFLanguage *lang, const void *source, size_t si
         if (self.root.pending) {
           // The end token joins the root as a trailing extra, along with any
           // extras that were sitting above it (parser.c:/ts_parser__accept/).
+          TFReduction reduction = self.root.reduction;
           uint32_t below = self.root.base;
           uint32_t above = self.depth - self.root.base - 1;
-          uint32_t total = below + self.root.node_count + above + 1;
+          uint32_t total = below + reduction.node_count + above + 1;
           TFNode *children = malloc(total * sizeof(TFNode));
           if (!children) {
             tf_parser__fail(&self, token.start_byte, token.start_point, "out of memory");
@@ -372,10 +356,10 @@ static bool tf_parser__run(const TFLanguage *lang, const void *source, size_t si
           }
           if (below > 0) memcpy(children, self.nodes, below * sizeof(TFNode));
           // A root with an empty production never allocated a child array.
-          if (self.root.node_count > 0) {
-            memcpy(children + below, self.root.children, self.root.node_count * sizeof(TFNode));
+          if (reduction.node_count > 0) {
+            memcpy(children + below, reduction.children, reduction.node_count * sizeof(TFNode));
           }
-          memcpy(children + below + self.root.node_count, &self.nodes[self.root.base + 1],
+          memcpy(children + below + reduction.node_count, &self.nodes[self.root.base + 1],
                  above * sizeof(TFNode));
           children[total - 1] = (TFNode){
               .symbol = token.symbol,
@@ -384,22 +368,15 @@ static bool tf_parser__run(const TFLanguage *lang, const void *source, size_t si
               .end_byte = token.end_byte,
               .start_point = token.start_point,
               .end_point = token.end_point,
-              .value = self.sink->on_shift ? self.sink->on_shift(self.sink->payload, &token, true)
-                                           : NULL,
+              .value = tf_parser__emit_shift(&self, &token, true),
           };
-          TFReduction reduction = {
-              .symbol = self.root.symbol,
-              .production_id = self.root.production_id,
-              .child_count = self.root.child_count,
-              .node_count = total,
-              .children = children,
-              .start_byte = total > 1 ? children[0].start_byte : token.start_byte,
-              .start_point = total > 1 ? children[0].start_point : token.start_point,
-              .end_byte = token.end_byte,
-              .end_point = token.end_point,
-          };
-          value =
-              self.sink->on_reduce ? self.sink->on_reduce(self.sink->payload, &reduction) : NULL;
+          reduction.node_count = total;
+          reduction.children = children;
+          reduction.start_byte = total > 1 ? children[0].start_byte : token.start_byte;
+          reduction.start_point = total > 1 ? children[0].start_point : token.start_point;
+          reduction.end_byte = token.end_byte;
+          reduction.end_point = token.end_point;
+          value = tf_parser__emit_reduce(&self, &reduction);
           free(children);
         }
         if (root) *root = value;
@@ -421,7 +398,7 @@ done:
       if (self.nodes[i].value) self.sink->on_discard(self.sink->payload, self.nodes[i].value);
     }
     if (self.root.pending) {
-      for (uint32_t i = 0; i < self.root.node_count; i++) {
+      for (uint32_t i = 0; i < self.root.reduction.node_count; i++) {
         if (self.root.children[i].value) {
           self.sink->on_discard(self.sink->payload, self.root.children[i].value);
         }
@@ -449,8 +426,7 @@ static void *tf_capture__shift(void *payload, const TFToken *token, bool extra) 
 
 static void *tf_capture__reduce(void *payload, const TFReduction *reduction) {
   TFSpec *s = payload;
-  if (!tf_spec__reserve(s, (void **)&s->children, &s->child_capacity,
-                        s->child_count + reduction->node_count, sizeof(*s->children)))
+  if (!TF_SPEC_RESERVE(s, children, child_capacity, s->child_count + reduction->node_count))
     return NULL;
   uint32_t first = s->child_count;
   for (uint32_t i = 0; i < reduction->node_count; i++)
@@ -467,16 +443,22 @@ static void *tf_capture__reduce(void *payload, const TFReduction *reduction) {
   return s->failed ? NULL : (void *)(uintptr_t)(id + 1);
 }
 
+// Sets `failed` if the replay cannot recover the shapes.
 static bool tf_spec__materialize(TFSpec *s) {
-  if (s->materialized) return !s->failed;
-  s->materialized = true;
-  TFSink sink = {.payload = s, .on_shift = tf_capture__shift, .on_reduce = tf_capture__reduce};
-  return tf_parser__run(s->owner->lang, s->owner->lexer.source, s->owner->lexer.size, &sink, NULL,
-                        NULL, s) &&
-         s->captured && !s->failed;
+  if (!s->materialized) {
+    s->materialized = true;
+    TFSink sink = {.payload = s, .on_shift = tf_capture__shift, .on_reduce = tf_capture__reduce};
+    if (!tf_parser__run(s->owner->lang, s->owner->lexer.source, s->owner->lexer.size, &sink, NULL,
+                        NULL, s) ||
+        !s->captured)
+      s->failed = true;
+  }
+  return !s->failed;
 }
 
 bool tf_parse(const TFLanguage *lang, const void *source, size_t size, const TFSink *sink,
               void **root, TFError *error) {
   return tf_parser__run(lang, source, size, sink, root, error, NULL);
 }
+
+#undef TF_SPEC_RESERVE

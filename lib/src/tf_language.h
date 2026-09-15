@@ -20,9 +20,8 @@ struct TFLanguage {
   // load rather than a linear scan of unsorted symbol groups. See tf_language.c.
   const uint16_t *dense;
   // Action counts with SHIFT_REPEAT actions removed, indexed by the same action
-  // index as `ts->parse_actions`. Sized `action_entry_count`.
+  // index as `ts->parse_actions`.
   const uint8_t *action_counts;
-  uint32_t action_entry_count;
   // `production_id * field_at_width + child_index` -> the field that child fills
   // directly, or 0, for a `child_index` below `field_at_width`. Flattens the
   // per-production field map, which is otherwise a list to be scanned once per
