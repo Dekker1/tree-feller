@@ -183,12 +183,18 @@ static bool same(const Node *a, const Node *b) { return memcmp(a, b, sizeof(Node
 // may legitimately get past the reference's error region.
 static uint32_t next_token_end(TSNode node, uint32_t from) {
   uint32_t count = ts_node_child_count(node);
-  if (count == 0) return ts_node_start_byte(node) >= from ? ts_node_end_byte(node) : from;
+  if (count == 0) {
+    return ts_node_start_byte(node) >= from ? ts_node_end_byte(node) : from;
+  }
   for (uint32_t i = 0; i < count; i++) {
     TSNode child = ts_node_child(node, i);
-    if (ts_node_end_byte(child) < from) continue;
+    if (ts_node_end_byte(child) < from) {
+      continue;
+    }
     uint32_t limit = next_token_end(child, from);
-    if (limit > from) return limit;
+    if (limit > from) {
+      return limit;
+    }
   }
   return from;
 }
@@ -205,10 +211,11 @@ static void check(const char *path, const Grammar *g, const void *bytes, uint32_
   const char *source = bytes;
   TFError error;
   if (only_mode) {
-    if (tf_parse(g->lang, source, size, NULL, NULL, &error))
+    if (tf_parse(g->lang, source, size, NULL, NULL, &error)) {
       checked++;
-    else
+    } else {
       parse_failed(path, &error);
+    }
     return;
   }
 
@@ -234,7 +241,9 @@ static void check(const char *path, const Grammar *g, const void *bytes, uint32_
           break;
         }
       }
-      if (!found) break;
+      if (!found) {
+        break;
+      }
       first = next;
     }
     skipped++;
@@ -265,7 +274,9 @@ static void check(const char *path, const Grammar *g, const void *bytes, uint32_
   ts_tree_cursor_delete(&cursor);
 
   Nodes got = {0};
-  if (collector.nodes.len) flatten(&collector, collector.nodes.len - 1, &got);
+  if (collector.nodes.len) {
+    flatten(&collector, collector.nodes.len - 1, &got);
+  }
 
   size_t limit = want.len < got.len ? want.len : got.len;
   size_t mismatch = limit;
@@ -281,15 +292,21 @@ static void check(const char *path, const Grammar *g, const void *bytes, uint32_
       print_nodes("tree-feller", g->ts, &got);
     }
     fprintf(stderr, "  FAIL %s: node %zu\n", path, mismatch);
-    if (mismatch < want.len) print_node("want", g->ts, &want.data[mismatch]);
-    if (mismatch < got.len) print_node("got ", g->ts, &got.data[mismatch]);
+    if (mismatch < want.len) {
+      print_node("want", g->ts, &want.data[mismatch]);
+    }
+    if (mismatch < got.len) {
+      print_node("got ", g->ts, &got.data[mismatch]);
+    }
     if (want.len != got.len) {
       fprintf(stderr, "    %zu reference nodes, %zu from tree-feller\n", want.len, got.len);
     }
     failed++;
   } else {
     checked++;
-    if (verbose) printf("  ok %s (%zu nodes)\n", path, want.len);
+    if (verbose) {
+      printf("  ok %s (%zu nodes)\n", path, want.len);
+    }
   }
   free(want.data);
   free(got.data);
@@ -317,8 +334,12 @@ static void check_file(const Grammar *g, const char *path) {
 // then '---' and the expected s-expression -- which is ignored here, since the
 // comparison is against the parser itself rather than against a recorded tree.
 static bool rule_of(const char *line, char character) {
-  if (*line != character) return false;
-  while (*line == character) line++;
+  if (*line != character) {
+    return false;
+  }
+  while (*line == character) {
+    line++;
+  }
   return *line == '\n' || *line == '\0';
 }
 
@@ -355,7 +376,9 @@ static void check_corpus(const Grammar *g, const char *path) {
     }
     if (state == 3) {
       if (rule_of(line, '-')) {
-        while (length > 0 && source[length - 1] == '\n') length--;
+        while (length > 0 && source[length - 1] == '\n') {
+          length--;
+        }
         char label[512];
         snprintf(label, sizeof(label), "%s:%u %s", path, ++index, name);
         source[length] = '\0';
@@ -381,34 +404,42 @@ static void check_path(const Grammar *g, const char *path, const char *extension
     return;
   }
   if (!S_ISDIR(info.st_mode)) {
-    if (corpus_mode)
+    if (corpus_mode) {
       check_corpus(g, path);
-    else
+    } else {
       check_file(g, path);
+    }
     return;
   }
   DIR *dir = opendir(path);
-  if (!dir) return;
+  if (!dir) {
+    return;
+  }
   struct dirent *entry;
   while ((entry = readdir(dir))) {
-    if (entry->d_name[0] == '.') continue;
+    if (entry->d_name[0] == '.') {
+      continue;
+    }
     char child[4096];
     snprintf(child, sizeof(child), "%s/%s", path, entry->d_name);
     bool is_dir = entry->d_type == DT_DIR;
     // Symlinks are followed, and some filesystems do not fill in the type.
     if (entry->d_type != DT_DIR && entry->d_type != DT_REG) {
       struct stat child_info;
-      if (stat(child, &child_info) != 0) continue;
+      if (stat(child, &child_info) != 0) {
+        continue;
+      }
       is_dir = S_ISDIR(child_info.st_mode);
     }
     if (is_dir) {
       check_path(g, child, extension);
     } else {
       const char *dot = strrchr(entry->d_name, '.');
-      if (dot && strcmp(dot, extension) == 0)
+      if (dot && strcmp(dot, extension) == 0) {
         check_file(g, child);
-      else if (corpus_mode && dot && strcmp(dot, ".txt") == 0)
+      } else if (corpus_mode && dot && strcmp(dot, ".txt") == 0) {
         check_corpus(g, child);
+      }
     }
   }
   closedir(dir);
@@ -450,10 +481,14 @@ int main(int argc, char **argv) {
   ts_parser_set_language(g.parser, ts);
 
   if (first < argc) {
-    for (int i = first; i < argc; i++) check_path(&g, argv[i], extension);
+    for (int i = first; i < argc; i++) {
+      check_path(&g, argv[i], extension);
+    }
   } else {
     char path[4096];
-    while (tf_next_stdin_path(path, sizeof(path))) check_file(&g, path);
+    while (tf_next_stdin_path(path, sizeof(path))) {
+      check_file(&g, path);
+    }
   }
   tf_language_free(g.lang);
   ts_parser_delete(g.parser);

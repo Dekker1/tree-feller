@@ -46,22 +46,36 @@ typedef struct {
 } TFParser;
 
 static bool tf_parser__grow(TFParser *self, uint32_t needed) {
-  if (needed <= self->capacity) return true;
+  if (needed <= self->capacity) {
+    return true;
+  }
   // 64-bit, so doubling past 2^31 cannot wrap to 0 and loop forever.
   uint64_t capacity = self->capacity ? self->capacity : 64;
-  while (capacity < needed) capacity *= 2;
-  if (capacity > UINT32_MAX) capacity = UINT32_MAX;
+  while (capacity < needed) {
+    capacity *= 2;
+  }
+  if (capacity > UINT32_MAX) {
+    capacity = UINT32_MAX;
+  }
   TSStateId *states = realloc(self->states, (capacity + 1) * sizeof(TSStateId));
   TFNode *nodes = realloc(self->nodes, capacity * sizeof(TFNode));
-  if (states) self->states = states;
-  if (nodes) self->nodes = nodes;
-  if (!states || !nodes) return false;
+  if (states) {
+    self->states = states;
+  }
+  if (nodes) {
+    self->nodes = nodes;
+  }
+  if (!states || !nodes) {
+    return false;
+  }
   self->capacity = (uint32_t)capacity;
   return true;
 }
 
 static bool tf_parser__push(TFParser *self, TFNode node, TSStateId state) {
-  if (!tf_parser__grow(self, self->depth + 1)) return false;
+  if (!tf_parser__grow(self, self->depth + 1)) {
+    return false;
+  }
   self->nodes[self->depth++] = node;
   self->states[self->depth] = state;
   return true;
@@ -85,12 +99,16 @@ static bool tf_parser__shift(TFParser *self, const TFToken *token, bool extra, T
       .end_point = token->end_point,
       .value = tf_parser__emit_shift(self, token, extra),
   };
-  if (extra && self->depth == self->leading) self->leading++;
+  if (extra && self->depth == self->leading) {
+    self->leading++;
+  }
   return tf_parser__push(self, node, state);
 }
 
 static void tf_parser__fail(TFParser *self, uint32_t byte, TFPoint point, const char *format, ...) {
-  if (!self->error) return;
+  if (!self->error) {
+    return;
+  }
   self->error->byte = byte;
   self->error->point = point;
   va_list args;
@@ -115,7 +133,9 @@ static void tf_parser__describe_expected(const TFLanguage *lang, TSStateId state
   for (uint32_t symbol = 0; symbol < lang->ts->token_count; symbol++) {
     uint32_t count;
     tf_actions(lang, state, symbol, &count);
-    if (count == 0) continue;
+    if (count == 0) {
+      continue;
+    }
     const char *name = tf_parser__symbol_name(lang, symbol);
     int written = snprintf(out + used, size - used, "%s%s", found++ ? ", " : "", name);
     if (written < 0 || (size_t)written >= size - used) {
@@ -151,10 +171,11 @@ static bool tf_parser__reduce(TFParser *self, TSSymbol symbol, uint32_t child_co
   uint32_t popped = 0, trailing_count = 0;
   for (uint32_t structural = 0; structural < child_count;) {
     popped++;
-    if (!self->nodes[self->depth - popped].extra)
+    if (!self->nodes[self->depth - popped].extra) {
       structural++;
-    else if (structural == 0)
+    } else if (structural == 0) {
       trailing_count++;
+    }
   }
   uint32_t base = self->depth - popped;
 
@@ -195,7 +216,9 @@ static bool tf_parser__reduce(TFParser *self, TSSymbol symbol, uint32_t child_co
   if (is_root) {
     if (reduction.node_count > self->root.capacity) {
       TFNode *children = realloc(self->root.children, reduction.node_count * sizeof(TFNode));
-      if (!children) return false;
+      if (!children) {
+        return false;
+      }
       self->root.children = children;
       self->root.capacity = reduction.node_count;
     }
@@ -222,7 +245,9 @@ static bool tf_parser__reduce(TFParser *self, TSSymbol symbol, uint32_t child_co
   // The parent takes the cell at `base`, and the trailing extras excluded from it
   // sit directly on top in the new state (parser.c:/trailing_extras/). They move
   // down, or up by one above an empty production, so the regions can overlap.
-  if (!tf_parser__grow(self, base + 1 + trailing_count)) return false;
+  if (!tf_parser__grow(self, base + 1 + trailing_count)) {
+    return false;
+  }
   // Almost always zero -- a data file is mostly not comments -- and the call is
   // not free at one per reduction.
   if (trailing_count > 0) {
@@ -230,18 +255,26 @@ static bool tf_parser__reduce(TFParser *self, TSSymbol symbol, uint32_t child_co
   }
   self->nodes[base] = parent;
   self->depth = base + 1 + trailing_count;
-  for (uint32_t i = base + 1; i <= self->depth; i++) self->states[i] = state;
+  for (uint32_t i = base + 1; i <= self->depth; i++) {
+    self->states[i] = state;
+  }
   return true;
 }
 
 static bool tf_parser__demote_keyword(const TFLanguage *lang, TSStateId state, TFToken *token,
                                       bool was_keyword) {
   const TSLanguage *ts = lang->ts;
-  if (!was_keyword || token->symbol == ts->keyword_capture_token) return false;
-  if (tf_is_reserved_word(lang, state, token->symbol)) return false;
+  if (!was_keyword || token->symbol == ts->keyword_capture_token) {
+    return false;
+  }
+  if (tf_is_reserved_word(lang, state, token->symbol)) {
+    return false;
+  }
   uint32_t count;
   tf_actions(lang, state, ts->keyword_capture_token, &count);
-  if (count == 0) return false;
+  if (count == 0) {
+    return false;
+  }
   token->symbol = ts->keyword_capture_token;
   return true;
 }
@@ -253,8 +286,12 @@ static bool tf_parser__run(const TFLanguage *lang, const void *source, size_t si
   static const TFSink no_sink = {0};
   TFParser self = {
       .lang = lang, .sink = sink ? sink : &no_sink, .error = error, .capture = capture};
-  if (error) *error = (TFError){0};
-  if (root) *root = NULL;
+  if (error) {
+    *error = (TFError){0};
+  }
+  if (root) {
+    *root = NULL;
+  }
   if (size > UINT32_MAX) {
     tf_parser__fail(&self, 0, (TFPoint){0, 0}, "input is larger than 4 GiB");
     return false;
@@ -291,7 +328,9 @@ static bool tf_parser__run(const TFLanguage *lang, const void *source, size_t si
       }
       if (count > 1) {
         // The tables cannot decide here; work it out speculatively and replay.
-        if (!tf_parser__split(&self, token, &token)) goto done;
+        if (!tf_parser__split(&self, token, &token)) {
+          goto done;
+        }
         state = self.states[self.depth];
         continue;
       }
@@ -328,7 +367,9 @@ static bool tf_parser__run(const TFLanguage *lang, const void *source, size_t si
           if (!children) {
             goto oom;
           }
-          if (below > 0) memcpy(children, self.nodes, below * sizeof(TFNode));
+          if (below > 0) {
+            memcpy(children, self.nodes, below * sizeof(TFNode));
+          }
           // A root with an empty production never allocated a child array.
           if (reduction.node_count > 0) {
             memcpy(children + below, reduction.children, reduction.node_count * sizeof(TFNode));
@@ -353,7 +394,9 @@ static bool tf_parser__run(const TFLanguage *lang, const void *source, size_t si
           value = tf_parser__emit_reduce(&self, &reduction);
           free(children);
         }
-        if (root) *root = value;
+        if (root) {
+          *root = value;
+        }
         ok = true;
         goto done;
       }
@@ -371,7 +414,9 @@ done:
   // otherwise dropped on the floor. Give it back before the stack goes away.
   if (!ok && self.sink->on_discard) {
     for (uint32_t i = 0; i < self.depth; i++) {
-      if (self.nodes[i].value) self.sink->on_discard(self.sink->payload, self.nodes[i].value);
+      if (self.nodes[i].value) {
+        self.sink->on_discard(self.sink->payload, self.nodes[i].value);
+      }
     }
     if (self.root.pending) {
       for (uint32_t i = 0; i < self.root.reduction.node_count; i++) {
@@ -401,11 +446,13 @@ static void *tf_capture__shift(void *payload, const TFToken *token, bool extra) 
 
 static void *tf_capture__reduce(void *payload, const TFReduction *reduction) {
   TFSpec *s = payload;
-  if (!TF_SPEC_RESERVE(s, children, child_capacity, s->child_count + reduction->node_count))
+  if (!TF_SPEC_RESERVE(s, children, child_capacity, s->child_count + reduction->node_count)) {
     return NULL;
+  }
   uint32_t first = s->child_count;
-  for (uint32_t i = 0; i < reduction->node_count; i++)
+  for (uint32_t i = 0; i < reduction->node_count; i++) {
     s->children[s->child_count++] = (uint32_t)(uintptr_t)reduction->children[i].value - 1;
+  }
   uint32_t id = tf_spec__tree(s, (TFSpecTree){.token = {.symbol = reduction->symbol,
                                                         .start_byte = reduction->start_byte,
                                                         .end_byte = reduction->end_byte,
@@ -426,7 +473,9 @@ static bool tf_spec__materialize(TFSpec *s) {
     // The replay stops by failing once it has captured, so only `captured` counts.
     (void)tf_parser__run(s->owner->lang, s->owner->lexer.source, s->owner->lexer.size, &sink, NULL,
                          NULL, s);
-    if (!s->captured) s->failed = true;
+    if (!s->captured) {
+      s->failed = true;
+    }
   }
   return !s->failed;
 }

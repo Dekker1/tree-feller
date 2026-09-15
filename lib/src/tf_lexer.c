@@ -65,7 +65,9 @@ static void tf_lexer__do_advance(TFLexer *self, bool skip) {
 
 static void tf_lexer__advance(TSLexer *lexer, bool skip) {
   TFLexer *self = (TFLexer *)lexer;
-  if (self->byte >= self->size) return;  // lexer.c:250, `if (!self->chunk) return`
+  if (self->byte >= self->size) {
+    return;  // lexer.c:250, `if (!self->chunk) return`
+  }
   tf_lexer__do_advance(self, skip);
 }
 
@@ -87,8 +89,12 @@ static uint32_t tf_lexer__get_column(TSLexer *lexer) {
   for (uint32_t i = self->byte - self->point.column; i < self->byte;) {
     uint32_t next = 1;
     int32_t code_point = tf_utf8_next(self->source + i, self->size - i, &next);
-    if (code_point == TF_DECODE_ERROR) next = 1;
-    if (i != 0 || code_point != TF_BOM) column++;
+    if (code_point == TF_DECODE_ERROR) {
+      next = 1;
+    }
+    if (i != 0 || code_point != TF_BOM) {
+      column++;
+    }
     i += next;
   }
   return column;
@@ -139,7 +145,9 @@ static void tf_lexer__start(TFLexer *self) {
 }
 
 static void tf_lexer__finish(TFLexer *self) {
-  if (self->token_end_byte == TF_NO_END) tf_lexer__mark_end(&self->data);
+  if (self->token_end_byte == TF_NO_END) {
+    tf_lexer__mark_end(&self->data);
+  }
 }
 
 bool tf_lexer_next(TFLexer *self, TSStateId state, TFToken *out) {
@@ -150,7 +158,9 @@ bool tf_lexer_next(TFLexer *self, TSStateId state, TFToken *out) {
   tf_lexer__start(self);
   bool found = ts->lex_fn(&self->data, tf_lex_mode(self->lang, state).lex_state);
   tf_lexer__finish(self);
-  if (!found) return false;
+  if (!found) {
+    return false;
+  }
 
   out->symbol = self->data.result_symbol;
   out->start_byte = self->token_start_byte;

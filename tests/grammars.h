@@ -43,7 +43,9 @@ static const TFGrammar TF_GRAMMARS[] = {
 
 static inline const TFGrammar *tf_grammar_named(const char *name) {
   for (size_t i = 0; i < TF_GRAMMAR_COUNT; i++) {
-    if (strcmp(TF_GRAMMARS[i].name, name) == 0) return &TF_GRAMMARS[i];
+    if (strcmp(TF_GRAMMARS[i].name, name) == 0) {
+      return &TF_GRAMMARS[i];
+    }
   }
   return NULL;
 }
@@ -65,7 +67,9 @@ static inline void *tf_xrealloc(void *ptr, size_t size) {
 static inline bool tf_next_stdin_path(char *path, int size) {
   while (fgets(path, size, stdin)) {
     path[strcspn(path, "\n")] = '\0';
-    if (*path) return true;
+    if (*path) {
+      return true;
+    }
   }
   return false;
 }

@@ -4,6 +4,7 @@ BasedOnStyle: Google
 ColumnLimit: 100
 DerivePointerAlignment: false
 PointerAlignment: Right
+InsertBraces: true
 
 # Sort within a block, never across one. Include order is load-bearing here:
 # `tree_sitter/api.h` has to precede `tree_feller.h`, which pulls in the

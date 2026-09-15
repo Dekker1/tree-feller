@@ -110,7 +110,9 @@ static void check(const char *label, const Grammar *g, const char *source, size_
     Leaf want = leaves.data[i];
     // ERROR / MISSING leaves are the recovery machinery tree-feller does not
     // have; stop comparing once the reference tree stops being a clean parse.
-    if (want.end_byte == want.start_byte) break;  // MISSING leaf
+    if (want.end_byte == want.start_byte) {
+      break;  // MISSING leaf
+    }
 
     TFToken got;
     if (!tf_lexer_next(&lexer, want.state, &got)) {
@@ -188,10 +190,14 @@ int main(int argc, char **argv) {
     const TFGrammar *g = tf_grammar_named(argv[1]);
     Grammar grammar = grammar_load(g != NULL ? g->language() : tree_sitter_datazinc());
     unsigned files = 0;
-    for (int i = 2; i < argc; i++, files++) check_file(&grammar, argv[i]);
+    for (int i = 2; i < argc; i++, files++) {
+      check_file(&grammar, argv[i]);
+    }
     if (argc == 2) {
       char path[4096];
-      for (; tf_next_stdin_path(path, sizeof(path)); files++) check_file(&grammar, path);
+      for (; tf_next_stdin_path(path, sizeof(path)); files++) {
+        check_file(&grammar, path);
+      }
     }
     grammar_free(&grammar);
     printf("  %s: %u files, %u skipped (not parseable by this grammar)\n", argv[1], files, skipped);

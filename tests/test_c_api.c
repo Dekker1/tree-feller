@@ -89,7 +89,9 @@ int main(void) {
   const char *load_error = NULL;
   TFLanguage *lang = tf_language_load(tree_sitter_c(), &load_error);
   CHECK(lang != NULL, "could not load tables: %s", load_error ? load_error : "?");
-  if (lang == NULL) return 1;
+  if (lang == NULL) {
+    return 1;
+  }
 
   CHECK(tf_language_symbol_name(lang, 1) != NULL, "symbol 1 has no name");
   CHECK(tf_language_symbol_name(lang, 0xFFFF) == NULL, "out-of-range symbol got a name");

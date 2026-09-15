@@ -76,7 +76,9 @@ static TFVisibleCell tf_filter__cell(const TFFilter *self, const void *value) {
                          .production = (uint16_t)((packed >> 1) & 0xFFFFU)};
 #else
   uintptr_t index = (uintptr_t)value;
-  if (index == 0 || index > self->cells_len) return (TFVisibleCell){0};
+  if (index == 0 || index > self->cells_len) {
+    return (TFVisibleCell){0};
+  }
   return self->cells[index - 1];
 #endif
 }
@@ -95,7 +97,9 @@ static void *tf_filter__store_cell(TFFilter *self, uint32_t children, uint16_t p
   }
   if (self->cells_len == self->cells_capacity) {
     uint32_t next = self->cells_capacity ? self->cells_capacity * 2 : 64;
-    if (next < self->cells_capacity) next = UINT32_MAX;
+    if (next < self->cells_capacity) {
+      next = UINT32_MAX;
+    }
     if ((size_t)next > SIZE_MAX / sizeof(TFVisibleCell)) {
       self->failed = true;
       return NULL;
@@ -125,13 +129,21 @@ static const TFVisibleChild *tf_filter__run(const TFFilter *self, uint32_t posit
 }
 
 static bool tf_filter__reserve(TFVisibleChild **array, uint32_t *capacity, uint32_t needed) {
-  if (needed <= *capacity) return true;
+  if (needed <= *capacity) {
+    return true;
+  }
   // 64-bit, so doubling past 2^31 cannot wrap to 0 and loop forever.
   uint64_t next = *capacity ? *capacity : 64;
-  while (next < needed) next *= 2;
-  if (next > UINT32_MAX) next = UINT32_MAX;
+  while (next < needed) {
+    next *= 2;
+  }
+  if (next > UINT32_MAX) {
+    next = UINT32_MAX;
+  }
   TFVisibleChild *grown = realloc(*array, next * sizeof(TFVisibleChild));
-  if (!grown) return false;
+  if (!grown) {
+    return false;
+  }
   *array = grown;
   *capacity = (uint32_t)next;
   return true;
@@ -147,7 +159,9 @@ static void *tf_filter__on_shift(void *payload, const TFToken *token, bool extra
 
 static void *tf_filter__on_reduce(void *payload, const TFReduction *reduction) {
   TFFilter *self = payload;
-  if (self->failed) return NULL;
+  if (self->failed) {
+    return NULL;
+  }
   const TFLanguage *lang = self->lang;
   const TSLanguage *ts = lang->ts;
   uint16_t production_id = reduction->production_id;
@@ -175,17 +189,23 @@ static void *tf_filter__on_reduce(void *payload, const TFReduction *reduction) {
     const TFNode *child = &reduction->children[index];
     uint32_t owns = tf_filter__cell(self, child->value).children;
     TSSymbol alias = (alias_row && !child->extra) ? alias_row[structural] : 0;
-    if (alias || tf_symbol_metadata(lang, child->symbol).visible) break;
+    if (alias || tf_symbol_metadata(lang, child->symbol).visible) {
+      break;
+    }
     TSFieldId field =
         (field_row && !child->extra && structural < field_width) ? field_row[structural] : 0;
     if (field) {
       for (uint32_t i = 0; i < owns; i++) {
         TFVisibleChild *entry = &self->arena[position + i];
-        if (!entry->extra && !entry->field_id) entry->field_id = field;
+        if (!entry->extra && !entry->field_id) {
+          entry->field_id = field;
+        }
       }
     }
     position += owns;
-    if (!child->extra) structural++;
+    if (!child->extra) {
+      structural++;
+    }
   }
   uint32_t settled = position;
 
@@ -206,7 +226,9 @@ static void *tf_filter__on_reduce(void *payload, const TFReduction *reduction) {
       // Punctuation the consumer said it does not want. Leaves only: a node with
       // children would take them with it.
       if (self->sink->named_only && !named && !field && owns == 0) {
-        if (!child->extra) structural++;
+        if (!child->extra) {
+          structural++;
+        }
         continue;
       }
       TFVisibleNode node = {
@@ -242,7 +264,9 @@ static void *tf_filter__on_reduce(void *payload, const TFReduction *reduction) {
       if (field) {
         for (uint32_t i = 0; i < owns; i++) {
           TFVisibleChild entry = self->arena[position + i];
-          if (!entry.extra && !entry.field_id) entry.field_id = field;
+          if (!entry.extra && !entry.field_id) {
+            entry.field_id = field;
+          }
           self->scratch[produced++] = entry;
         }
       } else if (owns > 0) {
@@ -252,7 +276,9 @@ static void *tf_filter__on_reduce(void *payload, const TFReduction *reduction) {
     }
 
     position += owns;
-    if (!child->extra) structural++;
+    if (!child->extra) {
+      structural++;
+    }
   }
 
   // Most reductions produce nothing new -- their children are all hidden and
@@ -297,8 +323,12 @@ static void *tf_filter__on_reduce(void *payload, const TFReduction *reduction) {
       self->arena_len = base + 1;
     } else {
       // Declined. Take that as the answer for this symbol and stop asking.
-      if (!self->declined) self->declined = calloc(ts->symbol_count, sizeof(uint8_t));
-      if (self->declined) self->declined[reduction->symbol] = 1;
+      if (!self->declined) {
+        self->declined = calloc(ts->symbol_count, sizeof(uint8_t));
+      }
+      if (self->declined) {
+        self->declined[reduction->symbol] = 1;
+      }
     }
   }
 
@@ -326,7 +356,9 @@ bool tf_parse_visible(const TFLanguage *lang, const void *source, size_t size,
 
   if (ok && self.failed) {
     ok = false;
-    if (error) snprintf(error->message, TF_ERROR_MESSAGE_SIZE, "out of memory");
+    if (error) {
+      snprintf(error->message, TF_ERROR_MESSAGE_SIZE, "out of memory");
+    }
   }
 
   // The root has no parent to judge it, so it is emitted on its own terms.
@@ -348,7 +380,9 @@ bool tf_parse_visible(const TFLanguage *lang, const void *source, size_t size,
       };
       value = self.sink->on_node(self.sink->payload, &node);
     }
-    if (root) *root = value;
+    if (root) {
+      *root = value;
+    }
   } else if (root) {
     *root = NULL;
   }
@@ -357,7 +391,9 @@ bool tf_parse_visible(const TFLanguage *lang, const void *source, size_t size,
   // everything still sitting in the arena.
   if (!ok && self.sink->on_discard) {
     for (uint32_t i = 0; i < self.arena_len; i++) {
-      if (self.arena[i].value) self.sink->on_discard(self.sink->payload, self.arena[i].value);
+      if (self.arena[i].value) {
+        self.sink->on_discard(self.sink->payload, self.arena[i].value);
+      }
     }
   }
   free(self.arena);

@@ -35,7 +35,9 @@ static void compare(const uint8_t *bytes, uint32_t available) {
 
   checked++;
   bool ok = (want < 0) ? (got == TF_DECODE_ERROR) : (got == want && got_length == want_length);
-  if (ok) return;
+  if (ok) {
+    return;
+  }
   unsigned long long reported = failures++;
   if (reported < 20) {
     fprintf(stderr,

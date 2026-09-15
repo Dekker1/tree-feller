@@ -31,7 +31,9 @@ static unsigned failures = 0;
 static uint32_t expected_filtered_count(const TSParseAction *actions, uint32_t count) {
   uint32_t kept = 0;
   for (uint32_t i = 0; i < count; i++) {
-    if (!(actions[i].type == TSParseActionTypeShift && actions[i].shift.repetition)) kept++;
+    if (!(actions[i].type == TSParseActionTypeShift && actions[i].shift.repetition)) {
+      kept++;
+    }
   }
   return kept;
 }
@@ -68,7 +70,9 @@ static void check_grammar(const char *name, const TSLanguage *ts) {
       CHECK(tf_next_state(lang, state, symbol) == ts_language_next_state(ts, state, symbol),
             "state %u symbol %u next_state", s, y);
 
-      if (symbol >= ts->token_count) continue;
+      if (symbol >= ts->token_count) {
+        continue;
+      }
 
       uint32_t want_count;
       const TSParseAction *want = ts_language_actions(ts, state, symbol, &want_count);
@@ -82,8 +86,12 @@ static void check_grammar(const char *name, const TSLanguage *ts) {
       if (!seen[index]) {
         seen[index] = 1;
         entries++;
-        if (want_count != got_count) repeat_filtered++;
-        if (got_count > 1) genuine_conflicts++;
+        if (want_count != got_count) {
+          repeat_filtered++;
+        }
+        if (got_count > 1) {
+          genuine_conflicts++;
+        }
       }
     }
   }

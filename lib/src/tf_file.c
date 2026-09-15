@@ -85,7 +85,9 @@ bool tf_file_open(TFFile *self, const char *path, TFError *error) {
   return true;
 #else
   int fd = open(path, O_RDONLY);
-  if (fd < 0) return tf_file__fail(error, path, "cannot open", strerror(errno));
+  if (fd < 0) {
+    return tf_file__fail(error, path, "cannot open", strerror(errno));
+  }
 
   struct stat info;
   if (fstat(fd, &info) != 0) {
@@ -108,7 +110,9 @@ bool tf_file_open(TFFile *self, const char *path, TFError *error) {
   void *data = mmap(NULL, self->size, PROT_READ, MAP_PRIVATE, fd, 0);
   int saved = errno;
   close(fd);
-  if (data == MAP_FAILED) return tf_file__fail(error, path, "cannot map", strerror(saved));
+  if (data == MAP_FAILED) {
+    return tf_file__fail(error, path, "cannot map", strerror(saved));
+  }
   self->data = data;
   self->mapped = true;
   return true;

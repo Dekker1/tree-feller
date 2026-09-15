@@ -58,7 +58,9 @@ static inline uint16_t tf_lookup_packed(const TFLanguage *self, TSStateId state,
       uint16_t section_value = *(data++);
       uint16_t symbol_count = *(data++);
       for (unsigned j = 0; j < symbol_count; j++) {
-        if (*(data++) == symbol) return section_value;
+        if (*(data++) == symbol) {
+          return section_value;
+        }
       }
     }
     return 0;
@@ -141,7 +143,9 @@ static inline TSSymbolMetadata tf_symbol_metadata(const TFLanguage *self, TSSymb
 
 // language.c:134-140, verbatim.
 static inline TSSymbol tf_public_symbol(const TFLanguage *self, TSSymbol symbol) {
-  if (symbol == ts_builtin_sym_error) return symbol;
+  if (symbol == ts_builtin_sym_error) {
+    return symbol;
+  }
   return self->ts->public_symbol_map[symbol];
 }
 
@@ -158,12 +162,18 @@ static inline TSLexerMode tf_lex_mode(const TFLanguage *self, TSStateId state) {
 static inline bool tf_is_reserved_word(const TFLanguage *self, TSStateId state, TSSymbol symbol) {
   const TSLanguage *ts = self->ts;
   uint16_t set_id = ts->lex_modes[state].reserved_word_set_id;
-  if (set_id == 0) return false;
+  if (set_id == 0) {
+    return false;
+  }
   unsigned start = set_id * ts->max_reserved_word_set_size;
   unsigned end = start + ts->max_reserved_word_set_size;
   for (unsigned i = start; i < end; i++) {
-    if (ts->reserved_words[i] == symbol) return true;
-    if (ts->reserved_words[i] == 0) break;
+    if (ts->reserved_words[i] == symbol) {
+      return true;
+    }
+    if (ts->reserved_words[i] == 0) {
+      break;
+    }
   }
   return false;
 }
