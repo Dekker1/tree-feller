@@ -140,7 +140,7 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           toolchain: stable
-      - run: cargo package -p tree-feller
+      - run: rm -rf target/package && cargo package -p tree-feller
       - name: Test the packaged crate
         run: |
           cd target/package/tree-feller-*/
