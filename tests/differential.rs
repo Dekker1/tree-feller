@@ -99,9 +99,8 @@ fn walk(cursor: &mut TreeCursor<'_>, out: &mut Vec<Record>) {
     });
 }
 
-/// tree-feller reports a node when its parent reduces, so a node under a hidden
-/// one arrives before an earlier sibling that is not. Children always precede
-/// parents, which is enough to reassemble the tree and walk it in post-order.
+/// Children precede parents, but callbacks are not in tree-walk order.
+/// Reassemble the tree to compare it with a post-order cursor walk.
 fn subject(language: &Language, source: &[u8]) -> Result<Vec<Record>, tree_feller::ParseError> {
     let mut records: Vec<Record> = Vec::new();
     let mut links: Vec<Vec<usize>> = Vec::new();
@@ -412,4 +411,29 @@ fn visitor_panic_is_contained() {
     let _ = language.parse(b"int x = 1;", |_: Node<'_>, _: &mut Vec<Child<()>>| {
         panic!("visitor exploded");
     });
+}
+
+#[test]
+fn callbacks_need_not_follow_tree_walk_order() {
+    let mut spans: Vec<std::ops::Range<u32>> = Vec::new();
+    let root = Language::new(tree_sitter_c::LANGUAGE)
+        .unwrap()
+        .parse(
+            b"int x; /*c*/ int y;",
+            |node: Node<'_>, children: &mut Vec<Child<usize>>| {
+                assert!(children.iter().all(|child| child.value < spans.len()));
+                assert!(children
+                    .windows(2)
+                    .all(|pair| { spans[pair[0].value].end <= spans[pair[1].value].start }));
+                spans.push(node.byte_range());
+                spans.len() - 1
+            },
+        )
+        .unwrap();
+
+    assert_eq!(root, spans.len() - 1);
+
+    // The comment follows a later token in the stream, unlike a post-order walk.
+    let comment = spans.iter().position(|span| *span == (7..12)).unwrap();
+    assert!(spans[..comment].iter().any(|span| span.start >= 12));
 }

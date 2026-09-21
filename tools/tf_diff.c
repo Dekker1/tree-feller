@@ -82,10 +82,8 @@ static void walk(TSTreeCursor *cursor, Nodes *out) {
 // ---------------------------------------------------------------------------
 // The subject: the same sequence, from tree-feller.
 
-// tree-feller reports a node when its *parent* reduces, so a node nested under a
-// hidden one is reported before an earlier sibling that is not. The guarantee is
-// only that children come before parents, so the events are reassembled into a
-// tree and walked in post-order to line up with the cursor.
+// Children precede parents, but callbacks are not in tree-walk order.
+// Reassemble the tree to compare it with a post-order cursor walk.
 typedef struct {
   Nodes nodes;
   size_t *links;  // child indices, `child_count` of them from each node's `base`

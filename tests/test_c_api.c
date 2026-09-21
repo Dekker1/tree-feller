@@ -2,8 +2,9 @@
 // walks the whole public header from C so that a C consumer stays a tested
 // configuration rather than an assumed one.
 //
-// Behaviour is covered in Rust (`tests/`); what is checked here is that
-// every entry point is reachable, composes, and does something recognisable.
+// Behaviour is covered in Rust (`tests/`); what is checked here is that every
+// entry point is reachable, composes, and does something recognisable -- plus
+// the raw sink's ordering, which the Rust binding does not expose.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -82,6 +83,22 @@ static void *on_hidden(void *payload, const TFVisibleNode *node) {
   return (void *)count_nodes(node);  // never NULL, which would decline the fold
 }
 
+// Raw extras can arrive before reductions of earlier nodes.
+static bool saw_extra, extra_before_reduction;
+
+static void *on_shift_order(void *payload, const TFToken *token, bool extra) {
+  (void)payload;
+  (void)token;
+  saw_extra |= extra;
+  return NULL;
+}
+
+static void *on_reduce_order(void *payload, const TFReduction *reduction) {
+  (void)payload;
+  extra_before_reduction |= saw_extra && reduction->end_byte <= 7;
+  return NULL;
+}
+
 int main(void) {
   const char *source = "int a[] = {1, 2, 3};\nint f(int b) { return b + 1; }\n";
   uint32_t size = (uint32_t)strlen(source);
@@ -103,6 +120,13 @@ int main(void) {
   TFSink raw = {.on_shift = on_shift, .on_reduce = on_reduce};
   CHECK(tf_parse(lang, source, size, &raw, NULL, &error), "raw parse failed: %s", error.message);
   CHECK(raw_shifts > 0 && raw_reduces > 0, "raw parse reported nothing");
+
+  // The comment at byte 7 is shifted before the first declaration reduces.
+  const char *commented = "int x; /*c*/ int y;";
+  TFSink ordered = {.on_shift = on_shift_order, .on_reduce = on_reduce_order};
+  CHECK(tf_parse(lang, commented, (uint32_t)strlen(commented), &ordered, NULL, &error),
+        "commented parse failed: %s", error.message);
+  CHECK(extra_before_reduction, "expected an extra before an earlier node reduces");
 
   // The visible view, and the value threaded back out through the root.
   void *root = NULL;

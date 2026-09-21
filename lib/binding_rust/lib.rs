@@ -144,6 +144,10 @@ pub struct Child<V> {
 /// Closures implement this trait. Implement it directly to fold hidden runs.
 ///
 /// The parser reuses `children`; drain what you need. Remaining values are dropped.
+///
+/// Children precede parents, and `children` is in source order. Callbacks are not
+/// in tree-walk order: nodes wait for their parent's reduction. To obtain a walk
+/// order, reassemble the tree from child values and walk it.
 pub trait Visit<V> {
     /// A node has been completed, after all of its children.
     fn node(&mut self, node: Node<'_>, children: &mut Vec<Child<V>>) -> V;
@@ -156,7 +160,7 @@ pub trait Visit<V> {
     /// The parent sees one child instead of the run, unlike a CST walk.
     ///
     /// `None` declines that symbol permanently, avoiding quadratic repeated
-    /// offers. The default declines all folds and reproduces a CST walk.
+    /// offers. The default declines all folds, preserving every visible node.
     fn hidden(&mut self, _node: Node<'_>, _children: &mut Vec<Child<V>>) -> Option<V> {
         None
     }
@@ -168,7 +172,7 @@ impl<V, F: FnMut(Node<'_>, &mut Vec<Child<V>>) -> V> Visit<V> for F {
     }
 }
 
-/// What a parse reports. The default is what a tree-sitter CST walk gives.
+/// What a parse reports. The default includes every visible CST node.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Options {
     /// Skip anonymous *leaves* that fill no field: the punctuation, which on a
@@ -467,8 +471,8 @@ impl Language {
 
     /// Reports each node to `visitor` and returns its root value.
     ///
-    /// The node stream is what a tree-sitter CST walk gives. See
-    /// [`Language::parse_with`] to change that.
+    /// Reports CST nodes, children, and fields. See [`Visit`] for callback ordering
+    /// and [`Language::parse_with`] to change which nodes are reported.
     ///
     /// Returns [`ParseError`] above 4 GiB, the `u32` offset limit.
     pub fn parse<V, T: Visit<V>>(&self, source: &[u8], visitor: T) -> Result<V, ParseError> {

@@ -18,8 +18,9 @@ let nodes: usize = language.parse(
 # Ok::<_, Box<dyn std::error::Error>>(())
 ```
 
-Nodes arrive after their children and only live parser state is retained. Grammars must
-use ABI 15 and no external scanner. Use `Options` to filter nodes and `Visit::hidden` to
-fold long runs. See the repository README for details and limits.
+Nodes arrive after their children, but not in tree-walk order. Only live parser state
+is retained. Grammars must use ABI 15 and no external scanner. Use `Options` to filter
+nodes and `Visit::hidden` to fold long runs. See the repository README for details and
+limits.
 
 MIT licensed.

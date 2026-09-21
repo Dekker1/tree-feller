@@ -111,8 +111,9 @@ extern "C" {
     /// to open or was already closed.
     pub fn tf_file_close(file: *mut TFFile);
 
-    /// Parses `source`, reporting visible nodes to `sink` in the order a CST
-    /// walk would. Returns false and fills `error` on the first parse error.
+    /// Parses `source`, reporting to `sink` every visible node a CST walk
+    /// would visit, each after its own children but not in a walk's order.
+    /// Returns false and fills `error` on the first parse error.
     pub fn tf_parse_visible(
         language: *const TFLanguage,
         source: *const c_void,

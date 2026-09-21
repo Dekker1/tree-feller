@@ -74,8 +74,9 @@ typedef struct {
   TFPoint end_point;
 } TFReduction;
 
-// Reduce events, in the order the parse produces them: every child is reported
-// before its parent. Either callback may be NULL.
+// Shift and reduce events, with children reported before parents, but not in
+// tree-walk order: extras can precede reductions of earlier nodes.
+// Either callback may be NULL.
 typedef struct {
   void *payload;
   void *(*on_shift)(void *payload, const TFToken *token, bool extra);
@@ -124,7 +125,8 @@ void tf_file_close(TFFile *self);
 // Visible nodes
 //
 // Applies tree-sitter visibility, alias, and field rules to raw reductions,
-// producing the node sequence of a CST walk without building one.
+// reporting the nodes a CST walk would visit, with the children and fields it
+// would see, without building a tree.
 
 typedef struct {
   TSSymbol symbol;
@@ -163,18 +165,19 @@ typedef struct {
   // from a CST walk.
   //
   // NULL declines that symbol permanently, avoiding quadratic repeated offers.
-  // A NULL callback declines all folds and reproduces a CST walk.
+  // A NULL callback declines all folds, leaving the nodes of a full CST walk.
   //
   // `node->children` is only valid for the duration of the call.
   void *(*on_hidden)(void *payload, const TFVisibleNode *node);
 
   // Omits anonymous leaves with no field, usually punctuation. Fielded tokens,
-  // non-leaves, and named comments remain. False reproduces a full CST walk.
+  // non-leaves, and named comments remain. False keeps every visible node.
   bool named_only;
 } TFVisibleSink;
 
-// As `tf_parse`, reporting visible nodes instead of raw reductions. Children are
-// still reported before their parents.
+// As `tf_parse`, reporting visible nodes instead of raw reductions. Children
+// precede parents, but callbacks are not in tree-walk order: nodes wait for their
+// parent's reduction. To obtain a walk order, reassemble and walk the child values.
 bool tf_parse_visible(const TFLanguage *lang, const void *source, size_t size,
                       const TFVisibleSink *sink, void **root, TFError *error);
 

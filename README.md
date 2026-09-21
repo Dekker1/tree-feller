@@ -106,14 +106,19 @@ maps a file. `Options` and `Visit::hidden` configure the visible stream.
 
 ## Parse streams
 
-`tf_parse` reports every grammar reduction in post-order. It is the leanest API and
+`tf_parse` reports every shift and every grammar reduction. It is the leanest API and
 suits consumers that understand the grammar's symbols.
 
-`tf_parse_visible` applies tree-sitter's visibility, alias, and field rules, producing
-the sequence seen in a CST walk. Use it to replace a `TSTreeCursor` walk.
+`tf_parse_visible` applies tree-sitter's visibility, alias, and field rules, reporting
+the nodes a `TSTreeCursor` walk would visit, with the same children and fields.
 
 Each callback returns a value for the parent. The consumer owns child values when they
 arrive. On failure there is no root, so use `on_discard` to reclaim unconsumed values.
+
+Both streams report children before parents, with child values in source order.
+Callbacks are not in tree-walk order: visible nodes wait for their parent's reduction,
+and raw extras can precede reductions of earlier nodes. To obtain a walk order,
+reassemble the tree from child values and walk it (see `tools/tf_diff.c`).
 
 `TFVisibleSink` has two optional settings:
 
