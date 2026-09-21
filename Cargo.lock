@@ -474,7 +474,7 @@ dependencies = [
 
 [[package]]
 name = "tf-bench"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "cc",
  "codspeed-divan-compat",
@@ -519,7 +519,7 @@ dependencies = [
 
 [[package]]
 name = "tree-feller"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "cc",
  "tree-sitter",
