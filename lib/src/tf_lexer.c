@@ -150,13 +150,23 @@ static void tf_lexer__finish(TFLexer *self) {
   }
 }
 
-bool tf_lexer_next(TFLexer *self, TSStateId state, TFToken *out) {
+// parser.c:/ts_parser__lex/ lexes in the mode of one state and judges keywords
+// against another: they differ only while recovering, when it lexes in the
+// error state's mode (parser.c:586) for the state it is actually in.
+//
+// Forced inline so that tf_lexer_next, which runs once per token, compiles to
+// exactly the code it had before recovery needed the second entry point.
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((always_inline))
+#endif
+static inline bool tf_lexer__next(TFLexer *self, TSStateId lex_state, TSStateId state,
+                                  TFToken *out) {
   const TSLanguage *ts = self->lang->ts;
 
   self->token_is_keyword = false;
   self->token_lex_state = state;
   tf_lexer__start(self);
-  bool found = ts->lex_fn(&self->data, tf_lex_mode(self->lang, state).lex_state);
+  bool found = ts->lex_fn(&self->data, tf_lex_mode(self->lang, lex_state).lex_state);
   tf_lexer__finish(self);
   if (!found) {
     return false;
@@ -193,4 +203,12 @@ bool tf_lexer_next(TFLexer *self, TSStateId state, TFToken *out) {
   // same, from the parse stack's position (parser.c:531).
   tf_lexer_seek(self, out->end_byte, out->end_point);
   return true;
+}
+
+bool tf_lexer_next(TFLexer *self, TSStateId state, TFToken *out) {
+  return tf_lexer__next(self, state, state, out);
+}
+
+bool tf_lexer_next_in_error_mode(TFLexer *self, TSStateId state, TFToken *out) {
+  return tf_lexer__next(self, 0, state, out);
 }

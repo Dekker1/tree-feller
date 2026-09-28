@@ -43,6 +43,9 @@ const char *tf_language_field_name(const TFLanguage *self, TSFieldId field);
 // A terminal, as the lexer produced it.
 typedef struct {
   TSSymbol symbol;
+  // Inserted by error recovery rather than read from the input, so the span is
+  // empty. What `ts_node_is_missing` reports. Always false without recovery.
+  bool missing;
   uint32_t start_byte;
   uint32_t end_byte;
   TFPoint start_point;
@@ -52,7 +55,8 @@ typedef struct {
 // A shifted token or completed reduction on the parse stack.
 typedef struct {
   TSSymbol symbol;
-  bool extra;  // an `extra` token: whitespace or a comment, not a real child
+  bool extra;    // an `extra` token: whitespace or a comment, not a real child
+  bool missing;  // as `TFToken::missing`; never set on a reduction
   uint32_t start_byte;
   uint32_t end_byte;
   TFPoint start_point;
@@ -67,6 +71,11 @@ typedef struct {
   // children and intervening extras, and is valid only during the callback.
   uint32_t child_count;
   uint32_t node_count;
+  // Extras that were above the last child, which the parent does not take and
+  // which stay on the stack above it (parser.c:/trailing_extras/). They are
+  // `children[node_count]` onwards, valid only during the callback. Only a
+  // consumer that mirrors the stack needs them: they are not the parent's.
+  uint32_t trailing_count;
   const TFNode *children;
   uint32_t start_byte;
   uint32_t end_byte;
@@ -74,9 +83,22 @@ typedef struct {
   TFPoint end_point;
 } TFReduction;
 
+// Why the parser stopped, handed to `TFSink::on_error`.
+typedef struct {
+  // The token the state has no action for. For a run of bytes that does not lex
+  // at all, this is a leaf with symbol `ts_builtin_sym_error` spanning them,
+  // which is not a terminal the grammar knows and has no name.
+  TFToken token;
+  TSStateId state;  // the parse state that rejected it
+  // The terminals with an action in `state`, ascending. Only valid during the
+  // call. Empty when the state accepts nothing, which only the error state does.
+  const TSSymbol *expected;
+  uint32_t expected_count;
+} TFErrorEvent;
+
 // Shift and reduce events, with children reported before parents, but not in
 // tree-walk order: extras can precede reductions of earlier nodes.
-// Either callback may be NULL.
+// Any callback may be NULL.
 typedef struct {
   void *payload;
   void *(*on_shift)(void *payload, const TFToken *token, bool extra);
@@ -85,6 +107,18 @@ typedef struct {
   // Optional. Called once for every value the sink returned that no parent ever
   // consumed, when a parse fails partway through.
   void (*on_discard)(void *payload, void *value);
+
+  // Optional. Enables tree-sitter's error recovery. Called once each time the
+  // parser enters recovery, never once per skipped token.
+  //
+  // Returning true recovers, and the parse then reports what it did as ordinary
+  // events: an `ERROR` reduction over what it skipped, shifts inside it for the
+  // skipped tokens, and shifts with `TFToken::missing` for what it inserted.
+  //
+  // Returning false stops the parse exactly as a NULL callback would.
+  //
+  // A NULL callback means no recovery: the parse stops at the first error.
+  bool (*on_error)(void *payload, const TFErrorEvent *event);
 } TFSink;
 
 #define TF_ERROR_MESSAGE_SIZE 512
@@ -132,6 +166,7 @@ typedef struct {
   TSSymbol symbol;
   TSFieldId field_id;  // the field this child fills in its parent, 0 for none
   bool extra;          // whitespace or a comment: never fills a field
+  bool missing;        // inserted by recovery, so the span is empty
   void *value;
 } TFVisibleChild;
 
@@ -140,6 +175,7 @@ typedef struct {
   uint16_t production_id;
   bool named;
   bool extra;
+  bool missing;  // inserted by recovery, so the span is empty
   uint32_t start_byte;
   uint32_t end_byte;
   TFPoint start_point;
@@ -173,6 +209,12 @@ typedef struct {
   // Omits anonymous leaves with no field, usually punctuation. Fielded tokens,
   // non-leaves, and named comments remain. False keeps every visible node.
   bool named_only;
+
+  // As `TFSink::on_error`, and forwarded to it unchanged. A recovered parse
+  // reports `ERROR` as a visible named node, hides the `error_repeat` nodes
+  // that group skipped tokens, and marks inserted tokens with `missing`, which
+  // is what a `TSTreeCursor` walk of tree-sitter's own tree would show.
+  bool (*on_error)(void *payload, const TFErrorEvent *event);
 } TFVisibleSink;
 
 // As `tf_parse`, reporting visible nodes instead of raw reductions. Children

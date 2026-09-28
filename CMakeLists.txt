@@ -211,6 +211,21 @@ if(TF_BUILD_TESTS)
       add_test(NAME corpus_${grammar}
                COMMAND tf_diff --grammar ${grammar} --expect-failures 0
                        "${PROJECT_SOURCE_DIR}/tests/corpus/${grammar}")
+      # The same files broken, truncated and with tokens deleted, and recovered
+      # from: the tree has to be the one tree-sitter recovers to.
+      add_test(NAME recovery_${grammar}
+               COMMAND tf_diff --grammar ${grammar} --mutate 8 --expect-failures 0
+                       "${PROJECT_SOURCE_DIR}/tests/corpus/${grammar}")
+    endforeach()
+
+    # Reduced from recovery mismatches over the MiniZinc corpora.
+    file(GLOB tf_recovery_fixtures LIST_DIRECTORIES true CONFIGURE_DEPENDS
+         RELATIVE "${PROJECT_SOURCE_DIR}/tests/fixtures/recovery"
+         "${PROJECT_SOURCE_DIR}/tests/fixtures/recovery/*")
+    foreach(grammar ${tf_recovery_fixtures})
+      add_test(NAME regression_recovery_${grammar}
+               COMMAND tf_diff --grammar ${grammar} --recover --expect-failures 0
+                       "${PROJECT_SOURCE_DIR}/tests/fixtures/recovery/${grammar}")
     endforeach()
 
     # Reduced regressions from the outlier-grammar stress audit.

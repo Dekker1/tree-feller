@@ -16,6 +16,8 @@ fn main() {
     build
         .include(root.join("include"))
         .flag_if_supported("-std=c11")
+        // MSVC's C mode rejects `_Static_assert` below C11.
+        .flag_if_supported("/std:c11")
         .warnings(true);
     for name in [
         "tf_file.c",

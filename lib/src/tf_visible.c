@@ -58,6 +58,11 @@ typedef struct {
   // symbol, allocated only if a fold is declined at all.
   uint8_t *declined;
 
+  // Entries of trailing extras, set aside while the parent below them reduces.
+  // `lifted_len` is non-zero only if a failure stranded them there.
+  TFVisibleChild *lifted;
+  uint32_t lifted_len, lifted_capacity;
+
   bool failed;
 } TFFilter;
 
@@ -166,8 +171,35 @@ static void *tf_filter__on_shift(void *payload, const TFToken *token, bool extra
   return tf_filter__store_cell(self, 0, 0);
 }
 
-static void *tf_filter__on_reduce(void *payload, const TFReduction *reduction) {
-  TFFilter *self = payload;
+// Set the top `count` entries aside, and put them back.
+static bool tf_filter__lift(TFFilter *self, uint32_t count) {
+  if (!tf_filter__reserve(&self->lifted, &self->lifted_capacity, count)) {
+    self->failed = true;
+    return false;
+  }
+  self->arena_len -= count;
+  memcpy(self->lifted, &self->arena[self->arena_len], count * sizeof(TFVisibleChild));
+  self->lifted_len = count;
+  return true;
+}
+
+static void tf_filter__restore(TFFilter *self, uint32_t count) {
+  if (self->failed ||
+      !tf_filter__reserve(&self->arena, &self->arena_capacity, self->arena_len + count)) {
+    self->failed = true;
+    return;
+  }
+  memcpy(&self->arena[self->arena_len], self->lifted, count * sizeof(TFVisibleChild));
+  self->arena_len += count;
+  self->lifted_len = 0;
+}
+
+// Forced inline into both callers below: it is the whole of a reduction, and as
+// a call of its own it cost a second frame on every one.
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((always_inline))
+#endif
+static inline void *tf_filter__reduce(TFFilter *self, const TFReduction *reduction) {
   if (self->failed) {
     return NULL;
   }
@@ -245,6 +277,7 @@ static void *tf_filter__on_reduce(void *payload, const TFReduction *reduction) {
           .production_id = cell.production,
           .named = named,
           .extra = child->extra,
+          .missing = child->missing,
           .start_byte = child->start_byte,
           .end_byte = child->end_byte,
           .start_point = child->start_point,
@@ -260,6 +293,7 @@ static void *tf_filter__on_reduce(void *payload, const TFReduction *reduction) {
           .symbol = node.symbol,
           .field_id = field,
           .extra = child->extra,
+          .missing = child->missing,
           .value = self->sink->on_node ? self->sink->on_node(self->sink->payload, &node) : NULL,
       };
     } else {
@@ -346,12 +380,55 @@ static void *tf_filter__on_reduce(void *payload, const TFReduction *reduction) {
   return tf_filter__store_cell(self, self->arena_len - base, production_id);
 }
 
+// A reduction's children own the run at the top of the arena, unless extras
+// above them own entries of their own, which an ERROR from recovery does. Those
+// stay above the parent, so their entries come off while it reduces and go back
+// on top afterwards. A token owns none, so outside recovery this finds nothing.
+// Out of line: only a reduction with extras above it comes here.
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((noinline))
+#endif
+static void *tf_filter__reduce_under_extras(TFFilter *self, const TFReduction *reduction) {
+  if (self->failed) {
+    return NULL;
+  }
+  uint32_t lifted = 0;
+  for (uint32_t i = 0; i < reduction->trailing_count; i++) {
+    lifted += tf_filter__cell(self, reduction->children[reduction->node_count + i].value).children;
+  }
+  if (lifted && !tf_filter__lift(self, lifted)) {
+    return NULL;
+  }
+  void *value = tf_filter__reduce(self, reduction);
+  if (lifted) {
+    tf_filter__restore(self, lifted);
+  }
+  return value;
+}
+
+static void *tf_filter__on_reduce(void *payload, const TFReduction *reduction) {
+  TFFilter *self = payload;
+  if (reduction->trailing_count) {
+    return tf_filter__reduce_under_extras(self, reduction);
+  }
+  return tf_filter__reduce(self, reduction);
+}
+
+// The consumer's own decision, reached through our payload. The filter has
+// nothing to add: recovery reports itself as ordinary nodes.
+static bool tf_filter__on_error(void *payload, const TFErrorEvent *event) {
+  TFFilter *self = payload;
+  return self->sink->on_error(self->sink->payload, event);
+}
+
 bool tf_parse_visible(const TFLanguage *lang, const void *source, size_t size,
                       const TFVisibleSink *sink, void **root, TFError *error) {
   static const TFVisibleSink no_sink = {0};
   TFFilter self = {.lang = lang, .sink = sink ? sink : &no_sink};
-  TFSink raw = {
-      .payload = &self, .on_shift = tf_filter__on_shift, .on_reduce = tf_filter__on_reduce};
+  TFSink raw = {.payload = &self,
+                .on_shift = tf_filter__on_shift,
+                .on_reduce = tf_filter__on_reduce,
+                .on_error = self.sink->on_error ? tf_filter__on_error : NULL};
 
   void *raw_root = NULL;
   bool ok = tf_parse(lang, source, size, &raw, &raw_root, error);
@@ -375,10 +452,16 @@ bool tf_parse_visible(const TFLanguage *lang, const void *source, size_t size,
         self.sink->on_discard(self.sink->payload, self.arena[i].value);
       }
     }
+    for (uint32_t i = 0; i < self.lifted_len; i++) {
+      if (self.lifted[i].value) {
+        self.sink->on_discard(self.sink->payload, self.lifted[i].value);
+      }
+    }
   }
   free(self.arena);
   free(self.scratch);
   free(self.declined);
+  free(self.lifted);
 #if !TF_USE_PACKED_CELLS
   free(self.cells);
 #endif

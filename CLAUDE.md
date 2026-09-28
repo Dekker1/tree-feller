@@ -25,7 +25,8 @@ build/tf_diff --grammar datazinc ~/Code/github.com/minizinc/mzn-challenge
 ```
 
 Any change to the parser, lexer or visibility layer gets run over a large corpus
-before you believe it. The MiniZinc repos under `~/Code/github.com/minizinc/` are
+before you believe it. A change that can reach recovery also gets `--mutate 4`, which
+compares truncated and token-deleted copies of every file under recovery. The MiniZinc repos under `~/Code/github.com/minizinc/` are
 ~19k files and take a few minutes. Files a grammar itself rejects are counted
 separately and are not a result about tree-feller.
 
@@ -61,6 +62,18 @@ separately and are not a result about tree-feller.
   initial library list". Use a pty — `script -qec ...` — to get line-buffered
   progress out of a long sanitizer run.
 - **Field order in `TFLexer` is load-bearing** for the hot loop. Add to the end.
+- **A token in hand is not a token lexed again.** tree-sitter keeps a version's
+  lookahead across the reductions before a pause and hands the same token back on
+  resume. Lexing again judges a keyword against the state the head has reduced to,
+  and `where` becomes an identifier. A paused head keeps its token in
+  `TFSpec::paused`, and a split's first head uses the one the ordinary parser holds.
+- **A mismatch inside a recovered tree is usually a cost off by one node.** Log
+  `node_count_since_error` on both sides (`ts_stack_node_count_since_error` and
+  `TFSpecCost`) before reading any recovery logic: three of the parity bugs were a
+  count, not a decision.
+- **The private replay recovers too.** `tf_spec__materialize` parses from byte 0, so
+  it has to take every recovery the consumer already agreed to, or it never reaches
+  the fork and the split reports "out of memory".
 - **Offering a fold is O(run).** A repetition's run grows by one each reduction, so
   re-offering a symbol after it declined is quadratic. The filter caches the refusal
   per symbol; do not "simplify" that away. It was worth 515x on a data file.
@@ -141,8 +154,8 @@ copying 56 bytes per visited node, descend into the leftmost child directly
 rather than pushing it and popping it straight back, and keep the whole function
 **out of line** — it runs once per split, so the call is free, and inlining it
 grows the function that also holds the ordinary dispatch loop. That last one is
-worth -11% on SystemVerilog on its own. Note that `noinline` on
-`tf_parser__split`, which contains it, measures nothing: the placement matters.
+worth -11% on SystemVerilog on its own. `tf_parser__split` itself is now two
+out-of-line copies, see Recovery; inlining them measured 1-2% slower.
 
 Together, against the tree at the point the conflict fixes landed, null-sink
 over directory-sized corpora: -32.7% (SystemVerilog, 2,902 files), -29.4% (Go,
@@ -165,7 +178,7 @@ lexer cache** keyed on (byte, state) — an exact repeat within one split happen
 0.0% to 0.3% of the time, so there is nothing to cache, and reusing a token
 across *different* states is exactly the predicate `tf_spec__lex` already ports
 from `ts_parser__can_reuse_first_leaf`; **marking `tf_parser__split` noinline** —
-±0.3%, where marking `tf_spec__replay` alone is worth -11%.
+±0.3% at the time, where marking `tf_spec__replay` alone is worth -11%.
 
 What is left is inherent to replaying a decision. A grammar conflict that cannot
 be resolved until the end of a construct keeps the split alive for the whole
@@ -221,6 +234,33 @@ Branches merge only on identical stacks, deliberately — tree-sitter can merge 
 state alone because a GSS lets one version stand for many stacks, while a branch here
 is kept or discarded whole. The comparison must treat a cell inherited from before
 the fork as comparable, not skippable; skipping it handed ties to array order.
+
+## Recovery
+
+Opt-in through `on_error`, and a port of tree-sitter's: `ts_parser__handle_error`,
+`recover`, `recover_to_state`, the error costs, `condense_stack`. Nearly all of it is
+in `tf_parser_spec.h` and runs inside a split. The ordinary loop, `shift`, `reduce`
+and replay are each compiled twice on a constant `recover` flag, chosen once per parse,
+so a parse with `on_error` NULL runs the code it ran before recovery existed. So is
+`tf_parser__split`, and the speculative helpers take `recover` as a parameter:
+read from `TFSpec` at run time, the checks cost 2% more instructions on
+SystemVerilog. The same budget keeps `TFSpecHead` at 8 bytes, with recovery's
+per-head fields in `TFSpecRecord`: a 16-byte head alone measured 1%.
+
+With `on_error` set, a valid parse still keeps tree-sitter's per-cell counts
+(`TFCell`), which recovery needs and cannot rebuild once a cell's children are
+gone: +36% on DataZinc, about half visible counts and half stack node counts.
+
+A split that recovers cannot end while any of these is on its chain, because each
+would need a real stack cell the ordinary parser cannot hold, or could still change:
+a discontinuity (tree-sitter's NULL subtree), a head in `ERROR_STATE`, or an `ERROR`
+that is still a link. `pop_error` regroups that last one under a later ERROR, and a
+consumer that has seen it cannot take it back. Once a reduction absorbs it, nothing
+can reach it again.
+
+The visible filter assumes a reduction's children own the top of its arena. An ERROR
+from `recover_to_state` is an extra with visible entries, and a parent can reduce
+beneath it. `TFReduction::trailing_count` is what lets the filter lift those entries.
 
 ## Where tests go
 

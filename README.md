@@ -6,7 +6,8 @@ tree-sitter keeps a concrete syntax tree (CST) for incremental editing and error
 recovery. tree-feller drives the same generated lexer and parse tables and reports
 reductions as they finish. Conflicts retain private alternatives and can replay a
 prefix to resolve structural ties. It builds no
-`TSTree` or `TSNode` and stops at the first error.
+`TSTree` or `TSNode`. It stops at the first error unless asked to recover, and then
+recovers as tree-sitter does.
 
 On a 312 MB MiniZinc data corpus:
 
@@ -103,6 +104,7 @@ let nodes: usize = language.parse(
 
 The visitor's result for each node becomes a child value in its parent. `parse_file`
 maps a file. `Options` and `Visit::hidden` configure the visible stream.
+`Options::recover` turns on error recovery, and `Visit::error` sees each error first.
 
 ## Parse streams
 
@@ -129,20 +131,50 @@ reassemble the tree from child values and walk it (see `tools/tf_diff.c`).
 
 ## Errors
 
-Parsing stops at the first missing action and reports the valid tokens, for example:
+By default, parsing stops at the first missing action and reports the valid tokens,
+for example:
 
 ```text
 1:3: expected one of {)}, found end of file
 ```
 
-There is no recovery or `ERROR` node. As in tree-sitter, only `\n` advances the row and
-columns count bytes. Declared conflicts use value-free graph-structured stacks, with tree-sitter's
-limits and ordering for speculative alternatives. Structural ties can require
-a private replay of the prefix; consumer callbacks run only for the selected tree.
+As in tree-sitter, only `\n` advances the row and columns count bytes.
+
+### Recovery
+
+Set `on_error` on either sink to recover the way tree-sitter does. It is called once
+each time the parser starts to recover, with a `TFErrorEvent`: the rejected token, the
+state that rejected it, and the tokens that state accepts. Return `true` to recover or
+`false` to stop with the error above.
+
+What recovery did arrives as ordinary events, so a consumer builds a placeholder the
+same way it builds any other node:
+
+- an `ERROR` reduction (`ts_builtin_sym_error`) over what was skipped,
+- the skipped tokens as shifts inside it,
+- a shift with `TFToken::missing` set, and an empty span, for an inserted token.
+
+In the visible stream, `ERROR` is a visible named node and `missing` marks inserted
+tokens, as a `TSTreeCursor` walk of tree-sitter's own tree shows them.
+
+`tools/tf_diff --recover` compares recovered trees with libtree-sitter's, and
+`--mutate N` makes invalid copies of every file to compare as well. Recovery costs
+nothing while `on_error` is NULL. With it set, a parse of valid input takes a copy of
+the parser loop that keeps tree-sitter's error costs.
+
+### Conflicts
+
+Declared conflicts use value-free graph-structured stacks, with tree-sitter's limits
+and ordering for speculative alternatives. Structural ties can require a private
+replay of the prefix; consumer callbacks run only for the selected tree.
 
 ## Limits
 
-- No incremental parsing, tree, `TSNode` API, queries, or recovery.
+- No incremental parsing, tree, `TSNode` API, or queries.
+- Recovery runs speculatively until its outcome is settled. An `ERROR` node stays
+  open while a later error could still merge it, and a file that never recovers stays
+  speculative to the end. Memory then grows with the error region, not nesting depth.
+- `on_error` can fire for a speculative branch that later loses to another.
 - No external scanners; this excludes Python, Ruby, Rust, Bash, and many other grammars.
 - ABI 15 only; non-terminal extras are unsupported.
 - Inputs must fit in 4 GiB because byte offsets are `uint32_t`.
@@ -175,6 +207,7 @@ For parser, lexer, or visibility changes, compare any corpus with libtree-sitter
 
 ```sh
 build/tf_diff --grammar c /path/to/c/project
+build/tf_diff --grammar c --mutate 4 /path/to/c/project
 ```
 
 Files rejected by the grammar are counted separately. The repository fetches eight
