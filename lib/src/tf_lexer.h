@@ -46,4 +46,9 @@ void tf_lexer_seek(TFLexer *self, uint32_t byte, TFPoint point);
 // the offending character for the caller to report.
 bool tf_lexer_next(TFLexer *self, TSStateId state, TFToken *out);
 
+// As tf_lexer_next, but in the lex mode of the error state, which recovery lexes
+// with once the state's own mode finds nothing (parser.c:/error_mode = true/).
+// Keywords are still judged against `state`.
+bool tf_lexer_next_in_error_mode(TFLexer *self, TSStateId state, TFToken *out);
+
 #endif  // TF_LEXER_H

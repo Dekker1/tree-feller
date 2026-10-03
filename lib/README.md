@@ -20,7 +20,8 @@ let nodes: usize = language.parse(
 
 Nodes arrive after their children, but not in tree-walk order. Only live parser state
 is retained. Grammars must use ABI 15 and no external scanner. Use `Options` to filter
-nodes and `Visit::hidden` to fold long runs. See the repository README for details and
-limits.
+nodes and `Visit::hidden` to fold long runs. `Options::recover` recovers from syntax
+errors as tree-sitter does, reporting `ERROR` and missing nodes, and `Visit::error`
+can stop the parse instead. See the repository README for details and limits.
 
 MIT licensed.

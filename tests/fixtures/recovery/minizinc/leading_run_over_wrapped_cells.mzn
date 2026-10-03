@@ -1,0 +1,13 @@
+%
+
+%xxxxxxxxx
+
+%xxxxxxxxxxx
+%xxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+%xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+%xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+%xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+%
+%
+
+ fzn_member_bool(array

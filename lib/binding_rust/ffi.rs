@@ -48,6 +48,29 @@ pub struct TFFile {
     pub size: u32,
 }
 
+/// A terminal, as the lexer produced it. `missing` marks one error recovery
+/// inserted rather than read, so its span is empty.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct TFToken {
+    pub symbol: u16,
+    pub missing: bool,
+    pub start_byte: u32,
+    pub end_byte: u32,
+    pub start_point: TFPoint,
+    pub end_point: TFPoint,
+}
+
+/// Why the parser stopped. `expected` points at `expected_count` terminals and
+/// is valid only for the duration of the callback.
+#[repr(C)]
+pub struct TFErrorEvent {
+    pub token: TFToken,
+    pub state: u16,
+    pub expected: *const u16,
+    pub expected_count: u32,
+}
+
 /// One child of a [`TFVisibleNode`]: its symbol, the field it fills in the
 /// parent (0 for none), and whether it is an extra -- whitespace or a
 /// comment, which never fills a field.
@@ -56,6 +79,7 @@ pub struct TFVisibleChild {
     pub symbol: u16,
     pub field_id: u16,
     pub extra: bool,
+    pub missing: bool,
     pub value: *mut c_void,
 }
 
@@ -68,6 +92,7 @@ pub struct TFVisibleNode {
     pub production_id: u16,
     pub named: bool,
     pub extra: bool,
+    pub missing: bool,
     pub start_byte: u32,
     pub end_byte: u32,
     pub start_point: TFPoint,
@@ -89,6 +114,7 @@ pub struct TFVisibleSink {
     pub on_discard: Option<unsafe extern "C" fn(*mut c_void, *mut c_void)>,
     pub on_hidden: Option<unsafe extern "C" fn(*mut c_void, *const TFVisibleNode) -> *mut c_void>,
     pub named_only: bool,
+    pub on_error: Option<unsafe extern "C" fn(*mut c_void, *const TFErrorEvent) -> bool>,
 }
 
 extern "C" {

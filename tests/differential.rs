@@ -5,7 +5,7 @@
 //! them -- so `tools/tf_diff` remains the stricter of the two. Everything else a
 //! consumer can observe is here.
 use std::sync::OnceLock;
-use tree_feller::{Child, Language, LanguageFn, Node};
+use tree_feller::{Child, Language, LanguageFn, Node, Options};
 use tree_sitter::{Parser, TreeCursor};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -14,6 +14,7 @@ struct Record {
     field_id: u16,
     named: bool,
     extra: bool,
+    missing: bool,
     start_byte: u32,
     end_byte: u32,
     start_row: u32,
@@ -89,6 +90,7 @@ fn walk(cursor: &mut TreeCursor<'_>, out: &mut Vec<Record>) {
         field_id: cursor.field_id().map_or(0, |id| id.get()),
         named: node.is_named(),
         extra: node.is_extra(),
+        missing: node.is_missing(),
         start_byte: node.start_byte() as u32,
         end_byte: node.end_byte() as u32,
         start_row: start.row as u32,
@@ -101,12 +103,17 @@ fn walk(cursor: &mut TreeCursor<'_>, out: &mut Vec<Record>) {
 
 /// Children precede parents, but callbacks are not in tree-walk order.
 /// Reassemble the tree to compare it with a post-order cursor walk.
-fn subject(language: &Language, source: &[u8]) -> Result<Vec<Record>, tree_feller::ParseError> {
+fn subject(
+    language: &Language,
+    source: &[u8],
+    options: Options,
+) -> Result<Vec<Record>, tree_feller::ParseError> {
     let mut records: Vec<Record> = Vec::new();
     let mut links: Vec<Vec<usize>> = Vec::new();
 
-    let root = language.parse(
+    let root = language.parse_with(
         source,
+        options,
         |node: Node<'_>, children: &mut Vec<Child<usize>>| {
             let mut mine = Vec::with_capacity(children.len());
             for child in children.drain(..) {
@@ -120,6 +127,7 @@ fn subject(language: &Language, source: &[u8]) -> Result<Vec<Record>, tree_felle
                 field_id: 0,
                 named: node.is_named(),
                 extra: node.is_extra(),
+                missing: node.is_missing(),
                 start_byte: node.byte_range().start,
                 end_byte: node.byte_range().end,
                 start_row: node.start_point().row,
@@ -149,8 +157,8 @@ fn subject(language: &Language, source: &[u8]) -> Result<Vec<Record>, tree_felle
     Ok(out)
 }
 
-/// Returns false when the reference parser could not parse it either, which is
-/// not a result about tree-feller.
+/// Returns false when the reference parser could not parse it either. Such
+/// input must fail without recovery, and with it must give the same tree.
 fn compare(grammar: Grammar, label: &str, source: &[u8]) -> bool {
     let ts = grammar.tree_sitter();
     let mut parser = Parser::new();
@@ -158,17 +166,19 @@ fn compare(grammar: Grammar, label: &str, source: &[u8]) -> bool {
     let tree = parser.parse(source, None).expect("reference parse");
 
     let language = grammar.tree_feller();
-    if tree.root_node().has_error() {
+    let invalid = tree.root_node().has_error();
+    if invalid {
         assert!(
             language.parse(source, discard).is_err(),
             "{label}: accepted input the reference parser could not parse",
         );
-        return false;
     }
 
+    // With recovery, invalid input has a tree to compare as well.
     let mut expected = Vec::new();
     walk(&mut tree.walk(), &mut expected);
-    let actual = subject(language, source).unwrap_or_else(|e| panic!("{label}: {e}"));
+    let options = Options::default().recover(invalid);
+    let actual = subject(language, source, options).unwrap_or_else(|e| panic!("{label}: {e}"));
 
     for (i, (want, got)) in expected.iter().zip(actual.iter()).enumerate() {
         assert_eq!(
@@ -180,7 +190,7 @@ fn compare(grammar: Grammar, label: &str, source: &[u8]) -> bool {
         );
     }
     assert_eq!(expected.len(), actual.len(), "{label}: node count");
-    true
+    !invalid
 }
 
 const C: &[&str] = &[
@@ -240,9 +250,47 @@ fn check(grammar: Grammar, label: &str, sources: &[&str]) {
     }
 }
 
+/// Invalid input, which recovery has to turn into the same ERROR and MISSING
+/// nodes tree-sitter does: a skipped token, an inserted one, bytes that do not
+/// lex, a file that ends mid-construct, and an error region that grows across
+/// several recoveries.
+const C_INVALID: &[&str] = &[
+    "int int x;\n",
+    "int x = 1\nint y = 2;\n",
+    "int a = @;\n",
+    "int f(void) { return 0;",
+    "int a[] = {1, 2, , 3};\nint b = );\nstruct { int; } s;\n",
+    "void f() { if (x { g(); } else h(; }\n",
+];
+
+const GO_INVALID: &[&str] = &[
+    "package main\n\nfunc f() { x := }\n",
+    "package main\n\nfunc f( { return }\n",
+    "package main\n\nvar x = [1, 2\n",
+];
+
+fn check_invalid(grammar: Grammar, label: &str, sources: &[&str]) {
+    for (i, source) in sources.iter().enumerate() {
+        assert!(
+            !compare(grammar, &format!("{label} case {i}"), source.as_bytes()),
+            "{label} case {i}: the reference parser accepted {source:?}",
+        );
+    }
+}
+
 #[test]
 fn c_matches_tree_sitter() {
     check(Grammar::C, "c", C);
+}
+
+#[test]
+fn c_recovery_matches_tree_sitter() {
+    check_invalid(Grammar::C, "c invalid", C_INVALID);
+}
+
+#[test]
+fn go_recovery_matches_tree_sitter() {
+    check_invalid(Grammar::Go, "go invalid", GO_INVALID);
 }
 
 #[test]

@@ -1,13 +1,21 @@
 // Differential harness: tree-feller's visible node stream against a post-order
 // walk of the tree libtree-sitter builds for the same input.
 //
-//   tf_diff [--grammar <name>] [--corpus] [--only] [--expect-failures N] [-v]
-//           <path>...
+//   tf_diff [--grammar <name>] [--corpus] [--only] [--only-visible]
+//           [--recover] [--mutate N] [--expect-failures N] [-v] <path>...
 //
 // The grammar is any name in tests/grammars.h, defaulting to datazinc.
 // Directories are walked for files matching the grammar's extension; paths are
 // also read from stdin when none are given. `--corpus` reads tree-sitter's own
-// corpus format instead, and `--only` parses without a reference.
+// corpus format instead. `--only` parses without a reference and without a
+// sink; `--only-visible` does the same through the visible filter.
+//
+// `--recover` parses with error recovery and compares invalid input as well.
+// `--mutate N` also checks broken copies of every file: truncated at a quarter,
+// a half and three quarters, and for each of N evenly spaced tokens, with it
+// deleted, doubled, replaced by another token, or preceded by unlexable bytes,
+// and with it and a second token both deleted.
+// It implies `--recover`, and counts mismatches by where the first one falls.
 #include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -32,6 +40,7 @@ typedef struct {
   TSFieldId field_id;
   bool named;
   bool extra;
+  bool missing;
   uint32_t start_byte, end_byte;
   uint32_t start_row, start_column, end_row, end_column;
   uint32_t child_count;
@@ -69,6 +78,7 @@ static void walk(TSTreeCursor *cursor, Nodes *out) {
                  .field_id = ts_tree_cursor_current_field_id(cursor),
                  .named = ts_node_is_named(node),
                  .extra = ts_node_is_extra(node),
+                 .missing = ts_node_is_missing(node),
                  .start_byte = ts_node_start_byte(node),
                  .end_byte = ts_node_end_byte(node),
                  .start_row = start.row,
@@ -109,6 +119,7 @@ static void *on_node(void *payload, const TFVisibleNode *node) {
                                .production_id = node->production_id,
                                .named = node->named,
                                .extra = node->extra,
+                               .missing = node->missing,
                                .start_byte = node->start_byte,
                                .end_byte = node->end_byte,
                                .start_row = node->start_point.row,
@@ -141,6 +152,56 @@ static bool corpus_mode;
 // Parse with tree-feller alone, with no sink and no reference: what the library
 // costs on its own, without the node lists this tool keeps for comparison.
 static bool only_mode;
+// As `only_mode`, through the visible filter rather than the raw stream. The
+// sink is empty, so what it measures is the driver plus the filter.
+static bool visible_mode;
+// Parse with error recovery, and compare files the grammar rejects against
+// libtree-sitter's recovered tree as well, ERROR and MISSING nodes included.
+static bool recover_mode;
+static unsigned mutate_count;
+
+// Where a recovered parse first differs, worst last: anything outside an error
+// region is a regression in the parser proper, not a recovery difference.
+enum { MISMATCH_ERROR, MISMATCH_MISSING, MISMATCH_SKIPPED, MISMATCH_COUNT, MISMATCH_OUTSIDE };
+static const char *const mismatch_names[] = {"ERROR node differs", "MISSING token differs",
+                                             "inside an error region", "node count only",
+                                             "outside any error region"};
+static unsigned mismatches[5];
+
+static bool inside_error(const Nodes *nodes, const Node *node) {
+  for (size_t i = 0; i < nodes->len; i++) {
+    const Node *e = &nodes->data[i];
+    if (e->symbol == ts_builtin_sym_error && node->start_byte >= e->start_byte &&
+        node->end_byte <= e->end_byte) {
+      return true;
+    }
+  }
+  return false;
+}
+
+static unsigned classify(const Nodes *want, const Nodes *got, size_t at) {
+  if (at >= want->len || at >= got->len) {
+    return MISMATCH_COUNT;
+  }
+  const Node *a = &want->data[at], *b = &got->data[at];
+  if (a->symbol == ts_builtin_sym_error || b->symbol == ts_builtin_sym_error) {
+    return MISMATCH_ERROR;
+  }
+  if (a->missing || b->missing) {
+    return MISMATCH_MISSING;
+  }
+  if (inside_error(want, a) || inside_error(got, b)) {
+    return MISMATCH_SKIPPED;
+  }
+  return MISMATCH_OUTSIDE;
+}
+
+// Always recover: the comparison is of what recovery does, not whether to.
+static bool always_recover(void *payload, const TFErrorEvent *event) {
+  (void)payload;
+  (void)event;
+  return true;
+}
 // Number of failures that are known and accounted for. Anything else is a
 // regression, and anything fewer means a limitation was fixed without the note
 // being removed.
@@ -154,10 +215,12 @@ typedef struct {
 } Grammar;
 
 static void print_node(const char *label, const TSLanguage *ts, const Node *node) {
-  fprintf(stderr, "    %s %s prod=%u field=%u named=%d extra=%d [%u,%u) (%u,%u)-(%u,%u) kids=%u\n",
-          label, ts_language_symbol_name(ts, node->symbol), node->production_id, node->field_id,
-          node->named, node->extra, node->start_byte, node->end_byte, node->start_row,
-          node->start_column, node->end_row, node->end_column, node->child_count);
+  fprintf(
+      stderr,
+      "    %s %s prod=%u field=%u named=%d extra=%d missing=%d [%u,%u) (%u,%u)-(%u,%u) kids=%u\n",
+      label, ts_language_symbol_name(ts, node->symbol), node->production_id, node->field_id,
+      node->named, node->extra, node->missing, node->start_byte, node->end_byte, node->start_row,
+      node->start_column, node->end_row, node->end_column, node->child_count);
 }
 
 static void print_nodes(const char *heading, const TSLanguage *ts, const Nodes *nodes) {
@@ -175,7 +238,15 @@ static void parse_failed(const char *path, const TFError *error) {
   failed++;
 }
 
-static bool same(const Node *a, const Node *b) { return memcmp(a, b, sizeof(Node)) == 0; }
+// Field by field: `missing` left padding in the struct, so memcmp would read it.
+static bool same(const Node *a, const Node *b) {
+  return a->symbol == b->symbol && a->production_id == b->production_id &&
+         a->field_id == b->field_id && a->named == b->named && a->extra == b->extra &&
+         a->missing == b->missing && a->start_byte == b->start_byte && a->end_byte == b->end_byte &&
+         a->start_row == b->start_row && a->start_column == b->start_column &&
+         a->end_row == b->end_row && a->end_column == b->end_column &&
+         a->child_count == b->child_count;
+}
 
 // The end of the first token beginning at or after `from`: how far tree-feller
 // may legitimately get past the reference's error region.
@@ -209,7 +280,19 @@ static void check(const char *path, const Grammar *g, const void *bytes, uint32_
   const char *source = bytes;
   TFError error;
   if (only_mode) {
-    if (tf_parse(g->lang, source, size, NULL, NULL, &error)) {
+    // With `--recover`, a sink with nothing but the decision to recover.
+    TFSink recovering = {.on_error = always_recover};
+    if (tf_parse(g->lang, source, size, recover_mode ? &recovering : NULL, NULL, &error)) {
+      checked++;
+    } else {
+      parse_failed(path, &error);
+    }
+    return;
+  }
+
+  if (visible_mode) {
+    TFVisibleSink recovering = {.on_error = always_recover};
+    if (tf_parse_visible(g->lang, source, size, recover_mode ? &recovering : NULL, NULL, &error)) {
       checked++;
     } else {
       parse_failed(path, &error);
@@ -221,10 +304,11 @@ static void check(const char *path, const Grammar *g, const void *bytes, uint32_
   TSNode root = ts_tree_root_node(tree);
 
   Collector collector = {0};
-  TFVisibleSink sink = {.payload = &collector, .on_node = on_node};
+  TFVisibleSink sink = {
+      .payload = &collector, .on_node = on_node, .on_error = recover_mode ? always_recover : NULL};
   bool ok = tf_parse_visible(g->lang, source, size, &sink, NULL, &error);
 
-  if (ts_node_has_error(root)) {
+  if (ts_node_has_error(root) && !recover_mode) {
     // Invalid input: tree-feller must refuse it, at or before the point where
     // the reference parser first had to recover.
     TSNode first = root;
@@ -289,7 +373,9 @@ static void check(const char *path, const Grammar *g, const void *bytes, uint32_
       print_nodes("reference", g->ts, &want);
       print_nodes("tree-feller", g->ts, &got);
     }
-    fprintf(stderr, "  FAIL %s: node %zu\n", path, mismatch);
+    unsigned category = classify(&want, &got, mismatch);
+    mismatches[category]++;
+    fprintf(stderr, "  FAIL %s: node %zu (%s)\n", path, mismatch, mismatch_names[category]);
     if (mismatch < want.len) {
       print_node("want", g->ts, &want.data[mismatch]);
     }
@@ -316,6 +402,105 @@ done:
   ts_tree_delete(tree);
 }
 
+// The non-empty leaves in source order, as start/end pairs. A cursor, because
+// `ts_node_child` walks the siblings before the one it returns.
+static void leaves(TSTreeCursor *cursor, uint32_t **out, size_t *len, size_t *capacity) {
+  for (;;) {
+    if (ts_tree_cursor_goto_first_child(cursor)) {
+      continue;
+    }
+    TSNode node = ts_tree_cursor_current_node(cursor);
+    if (ts_node_end_byte(node) > ts_node_start_byte(node)) {
+      if (*len == *capacity) {
+        *capacity = *capacity ? *capacity * 2 : 256;
+        *out = tf_xrealloc(*out, *capacity * 2 * sizeof(uint32_t));
+      }
+      (*out)[2 * *len] = ts_node_start_byte(node);
+      (*out)[2 * *len + 1] = ts_node_end_byte(node);
+      (*len)++;
+    }
+    while (!ts_tree_cursor_goto_next_sibling(cursor)) {
+      if (!ts_tree_cursor_goto_parent(cursor)) {
+        return;
+      }
+    }
+  }
+}
+
+// Broken copies of one file, each checked as a file of its own.
+static void mutate(const char *path, const Grammar *g, const char *source, uint32_t size) {
+  char label[4200];
+  // Room for the file with one of its tokens inserted a second time.
+  char *copy = tf_xrealloc(NULL, 2 * (size_t)size + 8);
+  static const unsigned quarters[] = {1, 2, 3};
+  for (unsigned q = 0; q < 3; q++) {
+    uint32_t cut = (uint32_t)((uint64_t)size * quarters[q] / 4);
+    snprintf(label, sizeof(label), "%s#cut%u", path, cut);
+    memcpy(copy, source, cut);
+    check(label, g, copy, cut);
+  }
+  TSTree *tree = ts_parser_parse_string(g->parser, NULL, source, size);
+  uint32_t *spans = NULL;
+  size_t len = 0, capacity = 0;
+  TSTreeCursor cursor = ts_tree_cursor_new(ts_tree_root_node(tree));
+  leaves(&cursor, &spans, &len, &capacity);
+  ts_tree_cursor_delete(&cursor);
+  ts_tree_delete(tree);
+  for (unsigned k = 0; k < mutate_count && len > 0; k++) {
+    size_t i = (size_t)((uint64_t)len * (2 * (uint64_t)k + 1) / (2 * (uint64_t)mutate_count));
+    uint32_t start = spans[2 * i], end = spans[2 * i + 1];
+    memcpy(copy, source, start);
+    memcpy(copy + start, source + end, size - end);
+    snprintf(label, sizeof(label), "%s#del%u-%u", path, start, end);
+    check(label, g, copy, size - (end - start));
+
+    // Another token, a third of the file away, for the edits that need two.
+    size_t j = (i + len / 3) % len;
+    uint32_t other = spans[2 * j], other_end = spans[2 * j + 1];
+
+    // The token twice.
+    memcpy(copy, source, end);
+    memcpy(copy + end, source + start, end - start);
+    memcpy(copy + end + (end - start), source + end, size - end);
+    snprintf(label, sizeof(label), "%s#dup%u-%u", path, start, end);
+    check(label, g, copy, size + (end - start));
+
+    // The token replaced by the other one.
+    memcpy(copy, source, start);
+    uint32_t at = start;
+    memcpy(copy + at, source + other, other_end - other);
+    at += other_end - other;
+    memcpy(copy + at, source + end, size - end);
+    at += size - end;
+    snprintf(label, sizeof(label), "%s#sub%u-%u:%u-%u", path, start, end, other, other_end);
+    check(label, g, copy, at);
+
+    // Bytes no lexer accepts, in front of the token.
+    static const char junk[] = "\x01\x02\x03";
+    memcpy(copy, source, start);
+    memcpy(copy + start, junk, sizeof(junk) - 1);
+    memcpy(copy + start + sizeof(junk) - 1, source + start, size - start);
+    snprintf(label, sizeof(label), "%s#junk%u", path, start);
+    check(label, g, copy, size + (uint32_t)sizeof(junk) - 1);
+
+    // Two errors in one file: both tokens gone.
+    if (other != start) {
+      uint32_t lo = start < other ? start : other, lo_end = start < other ? end : other_end;
+      uint32_t hi = start < other ? other : start, hi_end = start < other ? other_end : end;
+      memcpy(copy, source, lo);
+      at = lo;
+      memcpy(copy + at, source + lo_end, hi - lo_end);
+      at += hi - lo_end;
+      memcpy(copy + at, source + hi_end, size - hi_end);
+      at += size - hi_end;
+      snprintf(label, sizeof(label), "%s#del2:%u-%u:%u-%u", path, lo, lo_end, hi, hi_end);
+      check(label, g, copy, at);
+    }
+  }
+  free(spans);
+  free(copy);
+}
+
 static void check_file(const Grammar *g, const char *path) {
   TFFile file;
   TFError error;
@@ -325,6 +510,9 @@ static void check_file(const Grammar *g, const char *path) {
     return;
   }
   check(path, g, file.data, file.size);
+  if (mutate_count) {
+    mutate(path, g, file.data, file.size);
+  }
   tf_file_close(&file);
 }
 
@@ -454,6 +642,13 @@ int main(int argc, char **argv) {
       expected_failures = (unsigned)atoi(argv[++first]);
     } else if (strcmp(argv[first], "--only") == 0) {
       only_mode = true;
+    } else if (strcmp(argv[first], "--only-visible") == 0) {
+      visible_mode = true;
+    } else if (strcmp(argv[first], "--recover") == 0) {
+      recover_mode = true;
+    } else if (strcmp(argv[first], "--mutate") == 0 && first + 1 < argc) {
+      mutate_count = (unsigned)atoi(argv[++first]);
+      recover_mode = true;
     } else if (strcmp(argv[first], "--corpus") == 0) {
       corpus_mode = true;
     } else if (strcmp(argv[first], "--grammar") == 0 && first + 1 < argc) {
@@ -492,6 +687,13 @@ int main(int argc, char **argv) {
   ts_parser_delete(g.parser);
 
   printf("%u matched, %u not parseable by this grammar, %u failed\n", checked, skipped, failed);
+  if (recover_mode && failed) {
+    for (unsigned i = 0; i < 5; i++) {
+      if (mismatches[i]) {
+        printf("  %u: %s\n", mismatches[i], mismatch_names[i]);
+      }
+    }
+  }
   if (failed != expected_failures) {
     fprintf(stderr, "expected %u failures, got %u\n", expected_failures, failed);
     return 1;

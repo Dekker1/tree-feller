@@ -42,6 +42,24 @@
 //! # }
 //! ```
 //!
+//! Set [`Options::recover`] to carry on past syntax errors as tree-sitter does.
+//! What recovery skipped arrives as an `ERROR` node ([`Node::is_error`]), and
+//! what it inserted as a zero-width token ([`Node::is_missing`]).
+//! [`Visit::error`] hears about each error first, and can stop the parse instead.
+//!
+//! ```
+//! # use tree_feller::{Child, Language, Node, Options};
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! let language = Language::new(tree_sitter_c::LANGUAGE)?;
+//! let errors: usize = language.parse_with(b"int main( { }", Options::default().recover(true),
+//!     |node: Node<'_>, children: &mut Vec<Child<usize>>| {
+//!         children.drain(..).map(|c| c.value).sum::<usize>() + node.is_error() as usize
+//!     })?;
+//! assert!(errors > 0);
+//! # Ok(())
+//! # }
+//! ```
+//!
 //! Grammars must use ABI 15 and no external scanner; loading checks both.
 
 use std::ffi::{c_void, CStr, CString};
@@ -84,6 +102,7 @@ impl fmt::Debug for Node<'_> {
             .field("production_id", &self.production_id())
             .field("named", &self.is_named())
             .field("extra", &self.is_extra())
+            .field("missing", &self.is_missing())
             .field("bytes", &self.byte_range())
             .field("children", &self.child_count())
             .finish()
@@ -106,6 +125,14 @@ impl Node<'_> {
     /// Whitespace or a comment: present in the tree, but not part of any rule.
     pub fn is_extra(&self) -> bool {
         self.raw.extra
+    }
+    /// A token error recovery inserted rather than read, so its span is empty.
+    pub fn is_missing(&self) -> bool {
+        self.raw.missing
+    }
+    /// An `ERROR` node, over what error recovery skipped.
+    pub fn is_error(&self) -> bool {
+        self.raw.symbol == ERROR_SYMBOL
     }
     /// Byte offsets of the node in the source.
     pub fn byte_range(&self) -> std::ops::Range<u32> {
@@ -135,6 +162,8 @@ pub struct Child<V> {
     pub field_id: u16,
     /// Whitespace or a comment: present in the tree, but not part of any rule.
     pub extra: bool,
+    /// Inserted by error recovery, as [`Node::is_missing`].
+    pub missing: bool,
     /// What the visitor returned when it completed this child.
     pub value: V,
 }
@@ -164,6 +193,68 @@ pub trait Visit<V> {
     fn hidden(&mut self, _node: Node<'_>, _children: &mut Vec<Child<V>>) -> Option<V> {
         None
     }
+
+    /// The parse has reached a syntax error. Only called with
+    /// [`Options::recover`] set, once each time recovery starts, not once per
+    /// token it skips.
+    ///
+    /// Returning `true`, the default, recovers. `false` stops the parse with the
+    /// [`ParseError`] it would have returned without recovery.
+    fn error(&mut self, _error: ErrorEvent<'_>) -> bool {
+        true
+    }
+}
+
+/// The symbol of an `ERROR` node, and of an [`ErrorEvent`] over bytes that did
+/// not lex at all.
+pub const ERROR_SYMBOL: u16 = u16::MAX;
+
+/// Where a parse broke, handed to [`Visit::error`].
+#[derive(Clone, Copy)]
+pub struct ErrorEvent<'a> {
+    raw: &'a ffi::TFErrorEvent,
+}
+
+impl fmt::Debug for ErrorEvent<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ErrorEvent")
+            .field("symbol", &self.symbol())
+            .field("bytes", &self.byte_range())
+            .field("state", &self.state())
+            .field("expected", &self.expected())
+            .finish()
+    }
+}
+
+impl<'a> ErrorEvent<'a> {
+    /// The token the parser could not use, or [`ERROR_SYMBOL`] for bytes that
+    /// did not lex at all.
+    pub fn symbol(&self) -> u16 {
+        self.raw.token.symbol
+    }
+    /// Byte offsets of that token.
+    pub fn byte_range(&self) -> std::ops::Range<u32> {
+        self.raw.token.start_byte..self.raw.token.end_byte
+    }
+    /// Where that token starts.
+    pub fn start_point(&self) -> Point {
+        self.raw.token.start_point.into()
+    }
+    /// Where that token ends.
+    pub fn end_point(&self) -> Point {
+        self.raw.token.end_point.into()
+    }
+    /// The parse state that rejected it.
+    pub fn state(&self) -> u16 {
+        self.raw.state
+    }
+    /// The tokens that state would have accepted, ascending.
+    pub fn expected(&self) -> &'a [u16] {
+        if self.raw.expected_count == 0 {
+            return &[];
+        }
+        unsafe { std::slice::from_raw_parts(self.raw.expected, self.raw.expected_count as usize) }
+    }
 }
 
 impl<V, F: FnMut(Node<'_>, &mut Vec<Child<V>>) -> V> Visit<V> for F {
@@ -179,9 +270,17 @@ pub struct Options {
     /// list-heavy file is about half the nodes. Anonymous tokens that do fill a
     /// field, such as an `operator`, are still reported.
     pub named_only: bool,
+    /// Recover from syntax errors as tree-sitter does, instead of stopping at
+    /// the first. See [`Visit::error`].
+    pub recover: bool,
 }
 
 impl Options {
+    /// Sets [`Options::recover`].
+    pub fn recover(mut self, yes: bool) -> Self {
+        self.recover = yes;
+        self
+    }
     /// Sets [`Options::named_only`].
     pub fn named_only(mut self, yes: bool) -> Self {
         self.named_only = yes;
@@ -356,6 +455,7 @@ unsafe fn dispatch<V, T: Visit<V>>(
                 symbol: child.symbol,
                 field_id: child.field_id,
                 extra: child.extra,
+                missing: child.missing,
                 value,
             });
         }
@@ -405,6 +505,24 @@ unsafe extern "C" fn on_hidden<V, T: Visit<V>>(
     node: *const ffi::TFVisibleNode,
 ) -> *mut c_void {
     dispatch::<V, T>(payload, node, true)
+}
+
+unsafe extern "C" fn on_error<V, T: Visit<V>>(
+    payload: *mut c_void,
+    event: *const ffi::TFErrorEvent,
+) -> bool {
+    let state = &mut *(payload as *mut State<V, T>);
+    if state.panic.is_some() {
+        return false;
+    }
+    let raw = &*event;
+    match catch_unwind(AssertUnwindSafe(|| state.visit.error(ErrorEvent { raw }))) {
+        Ok(recover) => recover,
+        Err(payload) => {
+            state.panic = Some(payload);
+            false
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -500,6 +618,12 @@ impl Language {
             on_discard: None,
             on_hidden: Some(on_hidden::<V, T>),
             named_only: options.named_only,
+            // Left unset, the driver never enters its recovering path at all.
+            on_error: if options.recover {
+                Some(on_error::<V, T>)
+            } else {
+                None
+            },
         };
 
         let mut error = ffi::TFError::default();

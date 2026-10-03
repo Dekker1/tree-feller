@@ -24,6 +24,16 @@ static unsigned failures;
     }                                         \
   } while (0)
 
+// The public structs are packed by hand: a new field goes in a hole where one
+// exists. These catch a field that grew one instead.
+#if UINTPTR_MAX == UINT64_MAX
+_Static_assert(sizeof(TFToken) == 28, "TFToken grew");
+_Static_assert(sizeof(TFNode) == 40, "TFNode grew");
+_Static_assert(sizeof(TFReduction) == 48, "TFReduction grew");
+_Static_assert(sizeof(TFVisibleChild) == 16, "TFVisibleChild grew");
+_Static_assert(sizeof(TFVisibleNode) == 48, "TFVisibleNode grew");
+#endif
+
 static unsigned raw_shifts, raw_reduces, visible_nodes, folded_runs;
 static unsigned handed_out, handed_back;
 
@@ -75,6 +85,35 @@ static void on_discard(void *payload, void *value) {
   (void)payload;
   free(value);
   handed_back++;
+}
+
+static unsigned error_events, error_reductions, missing_shifts;
+
+static bool on_error_recover(void *payload, const TFErrorEvent *event) {
+  (void)payload;
+  (void)event;
+  error_events++;
+  return true;
+}
+
+static bool on_error_stop(void *payload, const TFErrorEvent *event) {
+  (void)payload;
+  (void)event;
+  error_events++;
+  return false;
+}
+
+static void *on_shift_recovered(void *payload, const TFToken *token, bool extra) {
+  (void)payload;
+  (void)extra;
+  missing_shifts += token->missing;
+  return NULL;
+}
+
+static void *on_reduce_recovered(void *payload, const TFReduction *reduction) {
+  (void)payload;
+  error_reductions += reduction->symbol == ts_builtin_sym_error;
+  return NULL;
 }
 
 static void *on_hidden(void *payload, const TFVisibleNode *node) {
@@ -152,6 +191,49 @@ int main(void) {
         "malformed input was accepted");
   CHECK(handed_out > 0, "nothing was built before the failure");
   CHECK(handed_out == handed_back, "%u values built, %u handed back", handed_out, handed_back);
+
+  // Recovery: an ERROR node over the skipped `x`, and a MISSING `;` in `int y`.
+  const char *broken = "int int x;\nint y\n";
+  uint32_t broken_size = (uint32_t)strlen(broken);
+  TFSink recovering = {.on_shift = on_shift_recovered,
+                       .on_reduce = on_reduce_recovered,
+                       .on_error = on_error_recover};
+  CHECK(tf_parse(lang, broken, broken_size, &recovering, NULL, &error), "did not recover: %s",
+        error.message);
+  CHECK(error_events == 2, "%u error events, expected 2", error_events);
+  CHECK(error_reductions > 0, "no ERROR reduction");
+  CHECK(missing_shifts == 1, "%u MISSING tokens, expected 1", missing_shifts);
+
+  // Declining is the same failure as not asking.
+  error_events = 0;
+  TFError declined;
+  TFSink stopping = {.on_error = on_error_stop};
+  CHECK(!tf_parse(lang, broken, broken_size, &stopping, NULL, &declined), "declining recovered");
+  CHECK(error_events == 1, "%u error events after declining", error_events);
+  CHECK(!tf_parse(lang, broken, broken_size, NULL, NULL, &error), "malformed input was accepted");
+  CHECK(declined.byte == error.byte && strcmp(declined.message, error.message) == 0,
+        "declining reported \"%s\" at %u, not \"%s\" at %u", declined.message, declined.byte,
+        error.message, error.byte);
+
+  // A recovered parse, like any other, hands every value to a parent or back.
+  handed_out = handed_back = 0;
+  void *recovered_root = NULL;
+  TFVisibleSink recovering_visible = {
+      .on_node = on_node_alloc, .on_discard = on_discard, .on_error = on_error_recover};
+  CHECK(tf_parse_visible(lang, broken, broken_size, &recovering_visible, &recovered_root, &error),
+        "visible parse did not recover: %s", error.message);
+  free(recovered_root);
+  handed_back++;
+  CHECK(handed_out == handed_back, "%u values built, %u handed back after recovery", handed_out,
+        handed_back);
+
+  // Folding sees recovery's nodes too: an ERROR over several skipped tokens is
+  // offered to on_hidden's check, whose tables stop short of the error symbols.
+  const char *skipped = "int x = 1 2 3 4 5;\n";
+  TFVisibleSink folding_recovery = {
+      .on_node = on_node, .on_hidden = on_hidden, .on_error = on_error_recover};
+  CHECK(tf_parse_visible(lang, skipped, (uint32_t)strlen(skipped), &folding_recovery, NULL, &error),
+        "folding parse did not recover: %s", error.message);
 
   // A length that does not fit a byte offset is refused, not truncated.
   CHECK(!tf_parse(lang, source, (size_t)1 << 32, NULL, NULL, &error), "4 GiB input was accepted");

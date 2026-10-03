@@ -155,9 +155,14 @@ static inline bool tf_is_reserved_word(const TFLanguage *self, TSStateId state, 
 }
 
 // A hidden rule whose children a consumer may fold: hidden by its own metadata,
-// and not something a parent production can alias into visibility.
+// and not something a parent production can alias into visibility. Never an
+// error symbol: both lie past the end of every per-symbol table, and the
+// error_repeat runs under an ERROR are left for the ERROR to report.
 static inline bool tf_foldable(const TFLanguage *self, TSSymbol symbol) {
-  return !self->aliasable[symbol] && !tf_symbol_metadata(self, symbol).visible;
+  // In this order the metadata lookup, which knows both error symbols, comes
+  // before the table read, and the compiler folds the second test into it.
+  return !tf_symbol_metadata(self, symbol).visible && symbol != tf_builtin_sym_error_repeat &&
+         !self->aliasable[symbol];
 }
 
 #endif  // TF_LANGUAGE_H

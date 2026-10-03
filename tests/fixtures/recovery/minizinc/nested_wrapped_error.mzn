@@ -1,0 +1,1 @@
+predicate fzn_global_cardinality_opt()=let{int:def=if count)
